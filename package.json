@@ -1,0 +1,64 @@
+{
+  "name": "foldr",
+  "version": "1.0.0",
+  "description": "Set once. Forget forever. Local file organizer.",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "concurrently \"cd frontend && yarn start\" \"wait-on http://localhost:3000 && electron .\"",
+    "start:prod": "electron .",
+    "build": "cd frontend && yarn build",
+    "build:backend": "cd backend && pyinstaller foldr_backend.spec --clean",
+    "dist": "yarn build && electron-builder --win --x64",
+    "dist:mac": "yarn build && electron-builder --mac",
+    "dist:linux": "yarn build && electron-builder --linux"
+  },
+  "build": {
+    "appId": "com.foldr.app",
+    "productName": "Foldr",
+    "copyright": "Copyright \u00a9 2026 Foldr",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "frontend/build/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "backend/dist/foldr-backend.exe",
+        "to": "backend/foldr-backend.exe"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "frontend/public/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "runAfterFinish": true
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "frontend/public/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "wait-on": "^8.0.0",
+    "cross-env": "^7.0.3"
+  }
+}
