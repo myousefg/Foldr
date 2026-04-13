@@ -353,15 +353,26 @@ def apply_template_route(ttype: str):
     if ttype not in RULE_TEMPLATES: raise HTTPException(404, "Not found")
     count = db_one("SELECT COUNT(*) AS c FROM rules")["c"]
     created = []
+    skipped = []
     for i, rd in enumerate(RULE_TEMPLATES[ttype]):
+        # Dedup: skip if a rule with same condition_type + condition_value already exists
+        existing = db_one(
+            "SELECT id FROM rules WHERE condition_type=? AND condition_value=?",
+            (rd["condition_type"], rd["condition_value"].lower())
+        )
+        if existing:
+            skipped.append(rd["condition_value"])
+            continue
         did = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
+        # Normalise condition_value to lowercase for consistent matching
+        cv = rd["condition_value"].lower()
         db_run("""INSERT INTO rules (id,name,condition_type,condition_value,destination_folder,
                    rename_template,priority,enabled,created_at) VALUES (?,?,?,?,?,?,?,?,?)""",
-               (did,rd["name"],rd["condition_type"],rd["condition_value"],
+               (did,rd["name"],rd["condition_type"],cv,
                 rd["destination_folder"],rd["rename_template"],count+i,1,now))
         created.append(db_one("SELECT * FROM rules WHERE id=?", (did,)))
-    return created
+    return {"created": created, "skipped": skipped, "added": len(created)}
 
 @api.get("/rules")
 def get_rules():     return db_all("SELECT * FROM rules ORDER BY priority")

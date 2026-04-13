@@ -8,7 +8,7 @@ Foldr is a native desktop application that **automatically monitors a folder and
 
 [![Platform](https://img.shields.io/badge/platform-Windows-blue?style=flat-square)](https://github.com)
 [![Stack](https://img.shields.io/badge/stack-Electron%20%2B%20React%20%2B%20Python-informational?style=flat-square)](https://github.com)
-[![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-Proprietary-red?style=flat-square)](LICENSE)
 
 </div>
 
@@ -29,11 +29,9 @@ Foldr is a native desktop application that **automatically monitors a folder and
 
 ## 📸 Screenshots
 
-| Dashboard                                  | Rules                           | Activity Log           |
-| ------------------------------------------ | ------------------------------- | ---------------------- |
-| Monitor status, recent moves, folder stats | Create and manage sorting rules | Full history with undo |
-
-> _Screenshots will be added after first production build._
+| Dashboard                                      | Rules                                  | Activity Log                                 |
+| ---------------------------------------------- | -------------------------------------- | -------------------------------------------- |
+| ![Dashboard](assets/screenshots/dashboard.png) | ![Rules](assets/screenshots/rules.png) | ![Activity](assets/screenshots/activity.png) |
 
 ---
 
@@ -54,8 +52,6 @@ Foldr is a native desktop application that **automatically monitors a folder and
 
 ### Prerequisites
 
-Make sure you have these installed before running Foldr:
-
 | Tool    | Version | Download              |
 | ------- | ------- | --------------------- |
 | Node.js | 18+     | https://nodejs.org    |
@@ -65,11 +61,11 @@ Make sure you have these installed before running Foldr:
 ### Installation
 
 ```bash
-# 1. Clone or extract the project, then Run the dev setup script (installs all deps + launches the app)
+# Clone or extract the project, then:
 scripts\dev.bat
 ```
 
-That's it. The script handles `npm install`, `yarn install`, and `pip install` automatically, then opens the Electron window.
+The script installs all Node, frontend, and Python dependencies automatically, then opens the Electron window. No manual setup needed.
 
 **Manual setup (optional):**
 
@@ -84,13 +80,11 @@ npm start
 
 ## 🏗️ Building the .exe
 
-To produce a distributable Windows installer:
-
 ```bash
 scripts\build-exe.bat
 ```
 
-This runs three steps automatically:
+Runs three steps automatically:
 
 ```
 1. PyInstaller  →  backend/dist/foldr-backend.exe
@@ -98,9 +92,7 @@ This runs three steps automatically:
 3. electron-builder  →  dist/Foldr Setup 1.0.0.exe
 ```
 
-The final NSIS installer creates a desktop shortcut and launches Foldr after install.
-
-> **Tip:** Run this from a clean terminal after `scripts\dev.bat` has completed at least once.
+> **Tip:** Run from a clean terminal after `scripts\dev.bat` has completed at least once.
 
 ---
 
@@ -118,7 +110,7 @@ Go to **Rules → New Rule** and define:
 - **Destination:** where the file should go (`Documents`, or an absolute path like `C:\Finance`)
 - **Rename template:** how the file should be named after moving
 
-Or apply a **Quick-start Preset** (Student / Freelancer / Developer) at the bottom of the Rules page.
+Or apply a **Quick-start Preset** (Student / Freelancer / Developer) at the bottom of the Rules page. Presets are dedup-safe — re-applying only adds missing rules.
 
 ### 3. Enable monitoring
 
@@ -131,8 +123,6 @@ If **Preview before moving** is enabled in Settings, an amber banner appears on 
 ---
 
 ## 🔤 Rename Tokens
-
-Use these tokens in your rename templates:
 
 | Token                    | Example output  | Description                                               |
 | ------------------------ | --------------- | --------------------------------------------------------- |
@@ -168,80 +158,108 @@ All settings are available under **Settings** in the app:
 | Default rename template | Fallback template when a rule has no template of its own      |
 | Theme                   | Light / Dark / System                                         |
 
-### Environment
+---
 
-No `.env` file is required. The backend always runs on `http://127.0.0.1:8765` and data is stored at:
+## 🗄️ Data & Reset
 
-- **Windows:** `%APPDATA%\.foldr\foldr.db`
-- **macOS/Linux:** `~/.foldr/foldr.db`
+All app data is stored in a single SQLite file:
+
+- **Windows:** `...(your user)\.foldr\foldr.db`
+
+| What you want to reset                                       | How                                                                                                           |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| Dashboard counters (Files Today, Total Organized, This Week) | Delete `%APPDATA%\.foldr\foldr.db` — resets everything                                                        |
+| Only the activity log                                        | Go to **Activity Log → Clear** in the app                                                                     |
+| Only the file counters                                       | Open `foldr.db` in [DB Browser for SQLite](https://sqlitebrowser.org) and run: `DELETE FROM organized_files;` |
+| Everything (full wipe)                                       | Delete `%APPDATA%\.foldr\foldr.db` — app recreates it fresh on next launch                                    |
+
+> ⚠️ Deleting the `.db` file also wipes your rules and settings. Export or note them down first if needed.
 
 ---
 
 ## 🗂️ Project Structure
 
 ```
-foldr-native/
+foldr/
+├── assets/
+│   └── screenshots/
 ├── electron/
-│   ├── main.js           Window, tray, IPC, backend process management
-│   └── preload.js        Exposes native APIs to React (folder picker, open-in-Explorer)
+│   ├── main.js               Window, tray, IPC, backend process management
+│   └── preload.js            Exposes native APIs to React (folder picker, open-in-Explorer)
 ├── frontend/
 │   ├── src/
 │   │   ├── pages/
-│   │   │   ├── Dashboard.js     Monitoring control, pending file review
-│   │   │   ├── RulesManager.js  Rule CRUD, presets, live rename preview
-│   │   │   ├── ActivityLog.js   Move history with undo
-│   │   │   └── Settings.js      All configuration + theme
+│   │   │   ├── Dashboard.js      Monitoring control, pending file review
+│   │   │   ├── RulesManager.js   Rule CRUD, presets, live rename preview
+│   │   │   ├── ActivityLog.js    Move history with undo
+│   │   │   └── Settings.js       All configuration + theme
 │   │   ├── components/
-│   │   │   ├── Sidebar.js       Navigation
-│   │   │   └── Layout.js        App shell
-│   │   └── lib/api.js           HTTP client → http://127.0.0.1:8765
+│   │   │   ├── Sidebar.js        Navigation
+│   │   │   └── Layout.js         App shell
+│   │   └── lib/api.js            HTTP client → http://127.0.0.1:8765
 ├── backend/
-│   ├── server.py           FastAPI app (rules, settings, file watcher, moves)
-│   ├── requirements.txt    Python dependencies
-│   └── foldr_backend.spec  PyInstaller build spec
+│   ├── server.py             FastAPI app (rules, settings, file watcher, moves)
+│   ├── requirements.txt      Python dependencies
+│   └── foldr_backend.spec    PyInstaller build spec
 ├── scripts/
-│   ├── dev.bat             Install deps + launch dev mode
-│   ├── build-exe.bat       Build production .exe installer
-│   └── clean-and-zip.bat   Remove generated files and zip for sharing
-└── package.json            Electron + electron-builder configuration
+│   ├── dev.bat               Install deps + launch dev mode
+│   ├── build-exe.bat         Build production .exe installer
+│   └── clean.bat             Remove generated folders before sharing/zipping
+└── package.json              Electron + electron-builder configuration
 ```
+
+---
+
+## 🔄 Updating Files in Dev Mode
+
+| What you changed                          | Do you need to restart?                                  |
+| ----------------------------------------- | -------------------------------------------------------- |
+| Any React file (`.js`, `.jsx`, CSS)       | ❌ No — hot reload is automatic                          |
+| `backend/server.py`                       | ✅ Yes — close the terminal and re-run `scripts\dev.bat` |
+| `electron/main.js` or `preload.js`        | ✅ Yes — close the terminal and re-run `scripts\dev.bat` |
+| `frontend/package.json` (added a package) | ✅ Yes — run `cd frontend && yarn install`, then restart |
 
 ---
 
 ## 🐛 Troubleshooting
 
-| Problem                       | Fix                                                                                       |
-| ----------------------------- | ----------------------------------------------------------------------------------------- |
-| Electron window is blank      | Wait ~10 s for React to compile on first run, then refresh (`Ctrl+R`)                     |
-| `BROWSER=none` not recognized | Already fixed in `.env` — make sure you're using `scripts\dev.bat`                        |
-| `react-hooks` ESLint error    | ESLint is disabled in `craco.config.js` — delete `frontend\node_modules\.cache` and retry |
-| `foldr-backend.exe` not found | You're in prod mode without building first — run `scripts\build-exe.bat` step 1           |
-| Files not being moved         | Check that the monitored folder exists and monitoring is toggled ON in Dashboard          |
-| Multiple popups for one file  | Fixed in backend (dedup lock) — make sure you're on the latest `server.py`                |
+| Problem                        | Fix                                                             |
+| ------------------------------ | --------------------------------------------------------------- |
+| Electron window is blank       | Wait ~10 s for React to compile, then refresh (`Ctrl+R`)        |
+| `react-hooks` ESLint error     | Delete `frontend\node_modules\.cache` and retry                 |
+| `foldr-backend.exe` not found  | You're in prod mode — run `scripts\build-exe.bat` step 1 first  |
+| Port 8765 already in use       | Another instance is running — close it from Task Manager        |
+| Files not being moved          | Check monitored folder exists and Monitoring is ON in Dashboard |
+| Dashboard counters won't reset | Delete `%APPDATA%\.foldr\foldr.db` and relaunch                 |
 
 ---
 
 ## 📦 Sharing with Another Developer
 
 ```bash
-scripts\clean-and-zip.bat
+scripts\clean.bat
 ```
 
-Removes all generated folders and creates a dated zip (e.g. `foldr-dist-2026-04-13.zip`) one level above the project. Typically **2–5 MB**. The receiving developer just runs `scripts\dev.bat`.
+Removes all generated folders (`node_modules`, `build`, `dist`, etc.). Then zip the folder manually and send it. Typically **2–5 MB**. The receiving developer runs `scripts\dev.bat` to get started.
 
 ---
 
 ## 👥 Contributors
 
-| Name      | Role        |
-| --------- | ----------- |
-| Your Team | Development |
+| Name                     | Role    |
+| ------------------------ | ------- |
+| Mohammed Yousef Gumilar  | Hacker  |
+| Joshua Daniel Simanjunak | Hustler |
+| Muhammad Ghiyats Fatiha  | Hipster |
 
 ---
 
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is proprietary software. All rights reserved.
+
+Unauthorized copying, distribution, or use of this software is strictly prohibited.
+See [LICENSE](LICENSE) for details.
 
 ---
 

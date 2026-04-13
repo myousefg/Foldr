@@ -114,8 +114,14 @@ export default function RulesManager() {
 
   const applyTemplate = async type => {
     try {
-      await rulesApi.applyTemplate(type);
-      toast.success(`${templateMeta[type].label} preset applied`);
+      const result = await rulesApi.applyTemplate(type);
+      if (result.added === 0) {
+        toast.info(`All ${templateMeta[type].label} rules already exist — nothing added.`);
+      } else if (result.skipped?.length > 0) {
+        toast.success(`${result.added} rule${result.added !== 1 ? 's' : ''} added. ${result.skipped.length} already existed and were skipped.`);
+      } else {
+        toast.success(`${templateMeta[type].label} preset applied — ${result.added} rules added.`);
+      }
       fetchRules();
     } catch { toast.error('Template apply failed'); }
   };
