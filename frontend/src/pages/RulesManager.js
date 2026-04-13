@@ -31,6 +31,7 @@ export default function RulesManager() {
   const [editingRule, setEditingRule] = useState(null);
   const [form, setForm]           = useState(defaultForm);
   const [saving, setSaving]       = useState(false);
+  const [applyingPreset, setApplyingPreset] = useState(null); // tracks which preset is loading
   const [preview, setPreview]     = useState('');
 
   const fetchRules = useCallback(async () => {
@@ -113,17 +114,29 @@ export default function RulesManager() {
   };
 
   const applyTemplate = async type => {
+    if (applyingPreset) return; // block if any preset is already running
+    setApplyingPreset(type);
     try {
       const result = await rulesApi.applyTemplate(type);
-      if (result.added === 0) {
+      // result shape: { added: number, skipped: number, rules: [] }
+      const added   = result?.added   ?? 0;
+      const skipped = result?.skipped ?? 0;
+      if (added === 0 && skipped > 0) {
         toast.info(`All ${templateMeta[type].label} rules already exist — nothing added.`);
-      } else if (result.skipped?.length > 0) {
-        toast.success(`${result.added} rule${result.added !== 1 ? 's' : ''} added. ${result.skipped.length} already existed and were skipped.`);
+      } else if (added > 0 && skipped > 0) {
+        toast.success(`${added} rule${added !== 1 ? 's' : ''} added, ${skipped} already existed and were skipped.`);
+      } else if (added > 0) {
+        toast.success(`${templateMeta[type].label} preset applied — ${added} rules added.`);
       } else {
-        toast.success(`${templateMeta[type].label} preset applied — ${result.added} rules added.`);
+        toast.info('No new rules to add.');
       }
       fetchRules();
-    } catch { toast.error('Template apply failed'); }
+    } catch (e) {
+      if (e.response?.status === 409) toast.warning('Already applying a preset, please wait.');
+      else toast.error('Preset apply failed');
+    } finally {
+      setApplyingPreset(null);
+    }
   };
 
   return (
@@ -214,12 +227,26 @@ export default function RulesManager() {
             <button
               key={key}
               onClick={() => applyTemplate(key)}
-              className="flex items-center gap-3 border border-border rounded-lg px-4 py-3 text-sm hover:bg-accent transition-colors"
+              disabled={!!applyingPreset}
+              className={`flex items-center gap-3 border border-border rounded-lg px-4 py-3 text-sm transition-colors ${
+                applyingPreset === key
+                  ? 'opacity-60 cursor-not-allowed bg-accent'
+                  : applyingPreset
+                  ? 'opacity-40 cursor-not-allowed'
+                  : 'hover:bg-accent cursor-pointer'
+              }`}
               data-testid={`template-${key}`}
             >
-              <Icon className="w-4 h-4 text-muted-foreground shrink-0" />
+              {applyingPreset === key ? (
+                <svg className="w-4 h-4 animate-spin text-muted-foreground shrink-0" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z"/>
+                </svg>
+              ) : (
+                <Icon className="w-4 h-4 text-muted-foreground shrink-0" />
+              )}
               <div className="text-left">
-                <div className="font-medium">{label}</div>
+                <div className="font-medium">{applyingPreset === key ? 'Applying…' : label}</div>
                 <div className="text-xs text-muted-foreground">{desc}</div>
               </div>
             </button>
