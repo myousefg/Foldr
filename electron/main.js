@@ -7,6 +7,9 @@ const path   = require('path');
 const fs     = require('fs');
 const http   = require('http');
 
+// Remove native menu bar (File, Edit, View, Window, Help)
+app.on('ready', () => Menu.setApplicationMenu(null));
+
 // ── Dev detection ─────────────────────────────────────────────────────────────
 // We're in dev if frontend/build/index.html does NOT exist yet
 const BUILD_INDEX = path.join(__dirname, '..', 'frontend', 'build', 'index.html');
@@ -76,10 +79,10 @@ function stopBackend() {
 // ── Window ────────────────────────────────────────────────────────────────────
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width:     1100,
-    height:    700,
-    minWidth:  840,
-    minHeight: 540,
+    width:     1160,
+    height:    720,
+    minWidth:  1160,
+    minHeight: 720,
     title: 'Foldr',
     backgroundColor: '#ffffff',
     webPreferences: {
