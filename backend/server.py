@@ -207,6 +207,22 @@ class FoldrHandler(FileSystemEventHandler):
 
     def _handle(self, path):
         if not os.path.isfile(path): return
+        # Dedup: skip if this path is already queued or being processed
+        with _pending_lock:
+            if path in _pending_paths:
+                return
+            _pending_paths.add(path)
+        try:
+            self._process(path)
+        finally:
+            # Release after a short delay so rapid duplicate events are ignored
+            threading.Timer(3.0, lambda: _pending_paths.discard(path)).start()
+
+    def _process(self, path):
+        if not os.path.isfile(path): return
+        # Also skip if already in pending_files table (survived a restart)
+        existing = db_one("SELECT id FROM pending_files WHERE original_path=?", (path,))
+        if existing: return
         settings = db_one("SELECT * FROM settings WHERE id='default'") or {}
         if not settings.get("monitoring_enabled", 1): return
         filename = os.path.basename(path)
@@ -232,6 +248,8 @@ class FoldrHandler(FileSystemEventHandler):
 
 _observer: Optional[Observer] = None
 _obs_lock = threading.Lock()
+_pending_paths: set = set()   # dedup: paths currently being processed
+_pending_lock = threading.Lock()
 
 def start_watcher(folder):
     global _observer
