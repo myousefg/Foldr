@@ -23,30 +23,17 @@ function FolderInput({ label, description, value, onChange, placeholder }) {
     const f = await window.electronAPI.selectFolder({ title: label });
     if (f) onChange(f);
   };
-  const open = async () => {
-    if (isElectron && value) await window.electronAPI.openFolder(value);
-  };
+  const open = async () => { if (isElectron && value) await window.electronAPI.openFolder(value); };
   return (
     <div className="space-y-1.5">
       <Label className="text-xs font-medium tracking-wide uppercase text-muted-foreground">{label}</Label>
       {description && <p className="text-xs text-muted-foreground">{description}</p>}
       <div className="flex gap-2">
-        <Input
-          value={value}
-          onChange={e => onChange(e.target.value)}
-          placeholder={placeholder}
-          className="font-mono text-sm flex-1"
-        />
+        <Input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} className="font-mono text-sm flex-1" />
         {isElectron && (
           <>
-            <Button variant="outline" size="sm" onClick={pick} title="Browse">
-              <Folder className="w-4 h-4" />
-            </Button>
-            {value && (
-              <Button variant="outline" size="sm" onClick={open} title="Open in Explorer">
-                <ExternalLink className="w-4 h-4" />
-              </Button>
-            )}
+            <Button variant="outline" size="sm" onClick={pick} title="Browse"><Folder className="w-4 h-4" /></Button>
+            {value && <Button variant="outline" size="sm" onClick={open} title="Open in Explorer"><ExternalLink className="w-4 h-4" /></Button>}
           </>
         )}
       </div>
@@ -55,38 +42,49 @@ function FolderInput({ label, description, value, onChange, placeholder }) {
 }
 
 export default function Settings() {
-  const [cfg, setCfg]     = useState(null);
-  const [dirty, setDirty] = useState({});
-  const [saving, setSaving] = useState(false);
-  const { theme, setTheme } = useTheme();
+  const [cfg, setCfg]           = useState(null);
+  const [dirty, setDirty]       = useState({});
+  const [saving, setSaving]     = useState(false);
+  const [autoStart, setAutoStart] = useState(false);
+  const { theme, setTheme }     = useTheme();
 
   const load = useCallback(async () => {
-    try { setCfg(await settingsApi.get()); } catch { console.error('load settings failed'); }
+    try {
+      const s = await settingsApi.get();
+      setCfg(s);
+      // Load real auto-start state from Electron
+      if (isElectron) {
+        const as = await window.electronAPI.getAutoStart();
+        setAutoStart(as);
+      }
+    } catch { console.error('load settings failed'); }
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  const set = (k, v) => {
-    setCfg(prev => ({ ...prev, [k]: v }));
-    setDirty(prev => ({ ...prev, [k]: v }));
-  };
+  const set = (k, v) => { setCfg(p => ({ ...p, [k]: v })); setDirty(p => ({ ...p, [k]: v })); };
 
   const save = async () => {
     if (!Object.keys(dirty).length) return;
     setSaving(true);
-    try {
-      await settingsApi.update(dirty);
-      setDirty({});
-      toast.success('Settings saved');
-    } catch { toast.error('Failed to save'); }
+    try { await settingsApi.update(dirty); setDirty({}); toast.success('Settings saved'); }
+    catch { toast.error('Failed to save'); }
     setSaving(false);
+  };
+
+  const handleAutoStart = async (enabled) => {
+    if (!isElectron) { toast.error('Auto-start only works in the packaged app'); return; }
+    try {
+      await window.electronAPI.setAutoStart(enabled);
+      setAutoStart(enabled);
+      toast.success(enabled ? 'Foldr will now start with Windows' : 'Auto-start disabled');
+    } catch { toast.error('Failed to set auto-start'); }
   };
 
   if (!cfg) return <div className="p-6 text-sm text-muted-foreground">Loading…</div>;
 
   return (
     <div className="space-y-8 animate-fade-in max-w-2xl">
-
       <div>
         <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">Settings</h1>
         <p className="text-sm text-muted-foreground mt-1">Configure monitoring, naming, and appearance.</p>
@@ -97,7 +95,6 @@ export default function Settings() {
       {/* Folders */}
       <section className="space-y-5">
         <h2 className="text-xs font-semibold tracking-[0.15em] uppercase text-muted-foreground">Folders</h2>
-
         <FolderInput
           label="Monitored Folder"
           description="Foldr watches this folder for new files."
@@ -105,7 +102,6 @@ export default function Settings() {
           onChange={v => set('monitored_folder', v)}
           placeholder="e.g. C:\Users\You\Downloads"
         />
-
         <FolderInput
           label="Base Output Folder"
           description='Rule destinations like "Documents" are relative to this. Leave blank to use your home directory.'
@@ -120,7 +116,6 @@ export default function Settings() {
       {/* Behaviour */}
       <section className="space-y-5">
         <h2 className="text-xs font-semibold tracking-[0.15em] uppercase text-muted-foreground">Behaviour</h2>
-
         <ToggleRow
           label="Preview before moving"
           description="Queue detected files for your review instead of moving them immediately."
@@ -138,6 +133,12 @@ export default function Settings() {
           description="Strip camera codes (IMG_, DSC_), copy markers, and normalise spacing."
           checked={!!cfg.auto_clean_names}
           onChange={v => set('auto_clean_names', v)}
+        />
+        <ToggleRow
+          label="Start with Windows"
+          description="Launch Foldr automatically when you log in. App opens minimized to tray."
+          checked={autoStart}
+          onChange={handleAutoStart}
         />
       </section>
 
@@ -170,7 +171,7 @@ export default function Settings() {
         <p className="text-xs text-muted-foreground">Choose the colour theme for the app.</p>
         <div className="flex gap-2">
           {themeOptions.map(opt => {
-            const Icon = opt.icon;
+            const Icon   = opt.icon;
             const active = theme === opt.value;
             return (
               <button
@@ -195,7 +196,6 @@ export default function Settings() {
           {saving ? 'Saving…' : 'Save Settings'}
         </Button>
       </div>
-
     </div>
   );
 }
