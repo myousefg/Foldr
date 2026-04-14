@@ -1,15 +1,12 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  // Open native folder picker; returns path string or null
-  selectFolder: (opts) => ipcRenderer.invoke('select-folder', opts),
-
-  // Open a folder in Explorer/Finder
-  openFolder: (path) => ipcRenderer.invoke('open-folder', path),
-
-  // Common system paths { home, downloads, documents, desktop }
-  getPaths: () => ipcRenderer.invoke('get-paths'),
-
-  // Is this running inside Electron?
+  selectFolder:   (opts) => ipcRenderer.invoke('select-folder', opts),
+  openFolder:     (path) => ipcRenderer.invoke('open-folder', path),
+  getPaths:       ()     => ipcRenderer.invoke('get-paths'),
+  notify:         (title, body) => ipcRenderer.invoke('show-notification', { title, body }),
+  setTrayBadge:   (count) => ipcRenderer.invoke('set-tray-badge', count),
+  setAutoStart:   (enable) => ipcRenderer.invoke('set-auto-start', enable),
+  getAutoStart:   ()     => ipcRenderer.invoke('get-auto-start'),
   isElectron: true,
 });

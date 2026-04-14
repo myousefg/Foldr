@@ -326,82 +326,142 @@ class RuleReorder(BaseModel):
 
 RULE_TEMPLATES = {
     "student": [
-        {"name":"PDFs → Assignments","condition_type":"extension","condition_value":".pdf","destination_folder":"Assignments","rename_template":"{date}_{originalname_cleaned}"},
-        {"name":"Word Docs → Notes","condition_type":"extension","condition_value":".docx","destination_folder":"Notes","rename_template":"{date}_{originalname_cleaned}"},
-        {"name":"Presentations","condition_type":"extension","condition_value":".pptx","destination_folder":"Presentations","rename_template":"{date}_{originalname_cleaned}"},
-        {"name":"Spreadsheets","condition_type":"extension","condition_value":".xlsx","destination_folder":"Spreadsheets","rename_template":"{date}_{originalname_cleaned}"},
+        {"name":"PDFs → Assignments",   "condition_type":"extension","condition_value":".pdf",  "destination_folder":"Assignments",   "rename_template":"{date}_{originalname_cleaned}"},
+        {"name":"Word Docs → Notes",     "condition_type":"extension","condition_value":".docx", "destination_folder":"Notes",         "rename_template":"{date}_{originalname_cleaned}"},
+        {"name":"Presentations",         "condition_type":"extension","condition_value":".pptx", "destination_folder":"Presentations", "rename_template":"{date}_{originalname_cleaned}"},
+        {"name":"Spreadsheets",          "condition_type":"extension","condition_value":".xlsx", "destination_folder":"Spreadsheets",  "rename_template":"{date}_{originalname_cleaned}"},
     ],
     "freelancer": [
-        {"name":"Invoices","condition_type":"keyword","condition_value":"invoice","destination_folder":"Invoices","rename_template":"{date}_{originalname_cleaned}_{sequence}"},
-        {"name":"Contracts","condition_type":"keyword","condition_value":"contract","destination_folder":"Contracts","rename_template":"{date}_{originalname_cleaned}"},
-        {"name":"PDFs → Documents","condition_type":"extension","condition_value":".pdf","destination_folder":"Documents","rename_template":"{date}_{originalname_cleaned}"},
-        {"name":"Images → Assets","condition_type":"extension","condition_value":".jpg","destination_folder":"Assets","rename_template":"{category}_{sequence}"},
+        {"name":"Invoices",              "condition_type":"keyword",  "condition_value":"invoice",  "destination_folder":"Invoices",  "rename_template":"{date}_{originalname_cleaned}_{sequence}"},
+        {"name":"Contracts",             "condition_type":"keyword",  "condition_value":"contract", "destination_folder":"Contracts", "rename_template":"{date}_{originalname_cleaned}"},
+        {"name":"Proposals",             "condition_type":"keyword",  "condition_value":"proposal", "destination_folder":"Proposals", "rename_template":"{date}_{originalname_cleaned}"},
+        {"name":"PDFs → Documents",      "condition_type":"extension","condition_value":".pdf",     "destination_folder":"Documents", "rename_template":"{date}_{originalname_cleaned}"},
+        {"name":"Images → Assets",       "condition_type":"extension","condition_value":".jpg",     "destination_folder":"Assets",   "rename_template":"{category}_{sequence}"},
     ],
     "developer": [
-        {"name":"Python Files","condition_type":"extension","condition_value":".py","destination_folder":"Code","rename_template":"{originalname}"},
-        {"name":"JavaScript","condition_type":"extension","condition_value":".js","destination_folder":"Code","rename_template":"{originalname}"},
-        {"name":"JSON Config","condition_type":"extension","condition_value":".json","destination_folder":"Config","rename_template":"{originalname}"},
-        {"name":"Markdown","condition_type":"extension","condition_value":".md","destination_folder":"Documentation","rename_template":"{originalname}"},
-        {"name":"Archives","condition_type":"extension","condition_value":".zip","destination_folder":"Archives","rename_template":"{date}_{originalname_cleaned}"},
-    ]
+        {"name":"Python Files",          "condition_type":"extension","condition_value":".py",   "destination_folder":"Code",          "rename_template":"{originalname}"},
+        {"name":"JavaScript",            "condition_type":"extension","condition_value":".js",   "destination_folder":"Code",          "rename_template":"{originalname}"},
+        {"name":"TypeScript",            "condition_type":"extension","condition_value":".ts",   "destination_folder":"Code",          "rename_template":"{originalname}"},
+        {"name":"JSON Config",           "condition_type":"extension","condition_value":".json", "destination_folder":"Config",        "rename_template":"{originalname}"},
+        {"name":"Markdown",              "condition_type":"extension","condition_value":".md",   "destination_folder":"Documentation", "rename_template":"{originalname}"},
+        {"name":"Archives",              "condition_type":"extension","condition_value":".zip",  "destination_folder":"Archives",      "rename_template":"{date}_{originalname_cleaned}"},
+    ],
+    "photographer": [
+        {"name":"JPEG Photos",           "condition_type":"extension","condition_value":".jpg",  "destination_folder":"Photos",   "rename_template":"{date}_{sequence}"},
+        {"name":"JPEG Photos (uppercase)","condition_type":"extension","condition_value":".jpeg", "destination_folder":"Photos",   "rename_template":"{date}_{sequence}"},
+        {"name":"PNG Images",            "condition_type":"extension","condition_value":".png",  "destination_folder":"Photos",   "rename_template":"{date}_{sequence}"},
+        {"name":"HEIC Photos",           "condition_type":"extension","condition_value":".heic", "destination_folder":"Photos",   "rename_template":"{date}_{sequence}"},
+        {"name":"RAW Photos",            "condition_type":"extension","condition_value":".raw",  "destination_folder":"RAW",      "rename_template":"{date}_{sequence}"},
+        {"name":"Video Files",           "condition_type":"extension","condition_value":".mp4",  "destination_folder":"Videos",   "rename_template":"{date}_{sequence}"},
+        {"name":"Lightroom Edits",       "condition_type":"extension","condition_value":".xmp",  "destination_folder":"Edits",    "rename_template":"{date}_{originalname}"},
+    ],
+    "designer": [
+        {"name":"Figma Files",           "condition_type":"extension","condition_value":".fig",  "destination_folder":"Figma",     "rename_template":"{date}_{originalname_cleaned}"},
+        {"name":"Adobe XD",              "condition_type":"extension","condition_value":".xd",   "destination_folder":"XD",        "rename_template":"{date}_{originalname_cleaned}"},
+        {"name":"Photoshop Files",       "condition_type":"extension","condition_value":".psd",  "destination_folder":"Photoshop", "rename_template":"{date}_{originalname_cleaned}"},
+        {"name":"Illustrator Files",     "condition_type":"extension","condition_value":".ai",   "destination_folder":"Illustrator","rename_template":"{date}_{originalname_cleaned}"},
+        {"name":"SVG Icons",             "condition_type":"extension","condition_value":".svg",  "destination_folder":"Icons",     "rename_template":"{originalname_cleaned}"},
+        {"name":"Fonts",                 "condition_type":"extension","condition_value":".ttf",  "destination_folder":"Fonts",     "rename_template":"{originalname}"},
+        {"name":"Exported PNGs",         "condition_type":"keyword",  "condition_value":"export","destination_folder":"Exports",   "rename_template":"{date}_{originalname_cleaned}"},
+    ],
+    "writer": [
+        {"name":"Word Documents",        "condition_type":"extension","condition_value":".docx", "destination_folder":"Drafts",    "rename_template":"{date}_{originalname_cleaned}"},
+        {"name":"PDFs",                  "condition_type":"extension","condition_value":".pdf",  "destination_folder":"Published", "rename_template":"{date}_{originalname_cleaned}"},
+        {"name":"Text Files",            "condition_type":"extension","condition_value":".txt",  "destination_folder":"Notes",     "rename_template":"{date}_{originalname_cleaned}"},
+        {"name":"Markdown Notes",        "condition_type":"extension","condition_value":".md",   "destination_folder":"Notes",     "rename_template":"{date}_{originalname_cleaned}"},
+        {"name":"Draft keyword",         "condition_type":"keyword",  "condition_value":"draft", "destination_folder":"Drafts",    "rename_template":"{date}_{originalname_cleaned}"},
+        {"name":"Final keyword",         "condition_type":"keyword",  "condition_value":"final", "destination_folder":"Final",     "rename_template":"{date}_{originalname_cleaned}"},
+    ],
 }
 
-@api.get("/rules/templates")
-def get_templates():    return RULE_TEMPLATES
-# Global lock to prevent concurrent preset applications (e.g. rapid double-click)
+# Normalised dedup key
+def _cv_key(ctype: str, cval: str) -> tuple:
+    return (ctype.lower(), cval.lower().strip().lstrip("."))
+
+# Lock prevents concurrent preset calls (rapid double-clicks)
 _preset_lock = threading.Lock()
+
+@api.get("/rules/templates")
+def get_templates(): return RULE_TEMPLATES
 
 @api.post("/rules/templates/{ttype}")
 def apply_template_route(ttype: str):
-    if ttype not in RULE_TEMPLATES: raise HTTPException(404, "Not found")
-
-    # Acquire lock so rapid double-clicks cannot run simultaneously
+    if ttype not in RULE_TEMPLATES:
+        raise HTTPException(404, "Template not found")
     if not _preset_lock.acquire(blocking=False):
-        raise HTTPException(409, "A preset is already being applied, please wait.")
-
+        raise HTTPException(409, "Already applying a preset — please wait.")
     try:
+        # Snapshot all existing keys in ONE query to prevent any duplication
+        existing_rules = db_all("SELECT condition_type, condition_value FROM rules")
+        existing_keys = {_cv_key(r["condition_type"], r["condition_value"]) for r in existing_rules}
         count = db_one("SELECT COUNT(*) AS c FROM rules")["c"]
-        added_rules = []
-        skipped_vals = []
-
+        added_rules, skipped_vals = [], []
         for i, rd in enumerate(RULE_TEMPLATES[ttype]):
-            cv = rd["condition_value"].lower().strip()
-
-            # Case-insensitive dedup: match with or without leading dot
-            cv_bare = cv.lstrip(".")
-            existing = db_one(
-                """SELECT id FROM rules
-                   WHERE condition_type = ?
-                   AND (LOWER(condition_value) = ?
-                        OR LOWER(condition_value) = ?
-                        OR LOWER(condition_value) = ?)""",
-                (rd["condition_type"], cv, cv_bare, "." + cv_bare)
-            )
-            if existing:
-                skipped_vals.append(cv)
+            key = _cv_key(rd["condition_type"], rd["condition_value"])
+            if key in existing_keys:
+                skipped_vals.append(rd["condition_value"])
                 continue
-
             rid = str(uuid.uuid4())
             now = datetime.now(timezone.utc).isoformat()
-            db_run(
-                """INSERT INTO rules
-                   (id, name, condition_type, condition_value, destination_folder,
-                    rename_template, priority, enabled, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)""",
-                (rid, rd["name"], rd["condition_type"], cv,
-                 rd["destination_folder"], rd["rename_template"], count + i, now)
-            )
+            cv  = rd["condition_value"].lower().strip()
+            db_run("""INSERT INTO rules (id,name,condition_type,condition_value,destination_folder,
+                       rename_template,priority,enabled,created_at) VALUES (?,?,?,?,?,?,?,?,?)""",
+                   (rid, rd["name"], rd["condition_type"], cv,
+                    rd["destination_folder"], rd["rename_template"], count + i, now))
+            existing_keys.add(key)  # update snapshot so same-call duplicates are caught too
             row = db_one("SELECT * FROM rules WHERE id=?", (rid,))
-            if row:
-                added_rules.append(row)
-
-        return {
-            "added":   len(added_rules),
-            "skipped": len(skipped_vals),
-            "rules":   added_rules,
-        }
+            if row: added_rules.append(row)
+        return {"added": len(added_rules), "skipped": len(skipped_vals), "rules": added_rules}
     finally:
         _preset_lock.release()
+
+@api.delete("/rules/duplicates")
+def remove_duplicate_rules():
+    """Remove duplicate rules (same condition_type + condition_value). Keeps the first."""
+    all_rules = db_all("SELECT * FROM rules ORDER BY priority")
+    seen: set = set()
+    deleted = 0
+    for rule in all_rules:
+        key = _cv_key(rule["condition_type"], rule["condition_value"])
+        if key in seen:
+            db_run("DELETE FROM rules WHERE id=?", (rule["id"],))
+            deleted += 1
+        else:
+            seen.add(key)
+    return {"deleted": deleted}
+
+@api.get("/rules/export")
+def export_rules():
+    return db_all("SELECT * FROM rules ORDER BY priority")
+
+class ImportRulesData(BaseModel):
+    rules: List[dict]
+    replace: bool = False
+
+@api.post("/rules/import")
+def import_rules(data: ImportRulesData):
+    if data.replace:
+        db_run("DELETE FROM rules")
+    existing_rules = db_all("SELECT condition_type, condition_value FROM rules")
+    existing_keys = {_cv_key(r["condition_type"], r["condition_value"]) for r in existing_rules}
+    count = db_one("SELECT COUNT(*) AS c FROM rules")["c"]
+    added, skipped = 0, 0
+    for i, rule in enumerate(data.rules):
+        key = _cv_key(rule.get("condition_type",""), rule.get("condition_value",""))
+        if not data.replace and key in existing_keys:
+            skipped += 1
+            continue
+        rid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        db_run("""INSERT INTO rules (id,name,condition_type,condition_value,destination_folder,
+                   rename_template,priority,enabled,created_at) VALUES (?,?,?,?,?,?,?,?,?)""",
+               (rid, rule.get("name","Imported Rule"), rule.get("condition_type","extension"),
+                rule.get("condition_value","").lower().strip(),
+                rule.get("destination_folder",""), rule.get("rename_template","{date}_{originalname_cleaned}"),
+                count + i, 1 if rule.get("enabled", True) else 0, now))
+        existing_keys.add(key)
+        added += 1
+    return {"added": added, "skipped": skipped}
 
 @api.get("/rules")
 def get_rules():     return db_all("SELECT * FROM rules ORDER BY priority")
@@ -492,6 +552,44 @@ def preview_org(data: OrganizeRequest):
     return out
 
 # ── Activity ──────────────────────────────────────────────────────────────────
+
+@api.get("/rules/export")
+def export_rules():
+    rules = db_all("SELECT * FROM rules ORDER BY priority")
+    return rules  # returns as JSON array
+
+class ImportRules(BaseModel):
+    rules: List[dict]
+    replace: bool = False  # if True, delete all existing rules first
+
+@api.post("/rules/import")
+def import_rules(data: ImportRules):
+    if data.replace:
+        db_run("DELETE FROM rules")
+
+    existing_rules = db_all("SELECT condition_type, condition_value FROM rules")
+    existing_keys = { _cv_key(r["condition_type"], r["condition_value"]) for r in existing_rules }
+    count = db_one("SELECT COUNT(*) AS c FROM rules")["c"]
+    added, skipped = 0, 0
+
+    for i, rule in enumerate(data.rules):
+        key = _cv_key(rule.get("condition_type",""), rule.get("condition_value",""))
+        if not data.replace and key in existing_keys:
+            skipped += 1
+            continue
+        rid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        db_run("""INSERT INTO rules (id,name,condition_type,condition_value,destination_folder,
+                   rename_template,priority,enabled,created_at) VALUES (?,?,?,?,?,?,?,?,?)""",
+               (rid, rule.get("name","Imported Rule"), rule.get("condition_type","extension"),
+                rule.get("condition_value",""), rule.get("destination_folder",""),
+                rule.get("rename_template","{date}_{originalname_cleaned}"),
+                count + i, 1 if rule.get("enabled", True) else 0, now))
+        existing_keys.add(key)
+        added += 1
+
+    return {"added": added, "skipped": skipped}
+
 @api.get("/activity")
 def get_activity(limit: int = Query(50, ge=1, le=500)):
     return db_all("SELECT * FROM activity_log ORDER BY timestamp DESC LIMIT ?", (limit,))
