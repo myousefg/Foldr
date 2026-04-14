@@ -12,4 +12,4 @@ if exist "backend\build"         ( rd /s /q "backend\build"         && echo   [x
 if exist "dist"                  ( rd /s /q "dist"                  && echo   [x] dist )
 
 echo.
-echo Done. Folder is ready to zip and share.
+echo Done. generated folders have been removed.

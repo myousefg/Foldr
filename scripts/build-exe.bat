@@ -1,5 +1,5 @@
 @echo off
-echo === Foldr Build to .exe ===
+echo === Foldr .exe Build ===
 echo.
 echo [1/3] Bundle Python backend with PyInstaller...
 cd backend
