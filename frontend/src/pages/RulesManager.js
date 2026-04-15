@@ -240,7 +240,7 @@ export default function RulesManager() {
           </button>
         </div>
         <p className="text-xs text-muted-foreground mb-4">Apply any preset at any time — existing rules are never duplicated.</p>
-        <div className="flex flex-wrap gap-2">
+        <div className="grid grid-cols-3 gap-3">
           {Object.entries(templateMeta).map(([key, { label, icon: Icon, desc }]) => (
             <button
               key={key}

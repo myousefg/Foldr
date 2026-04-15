@@ -407,7 +407,7 @@ def apply_template_route(ttype: str):
             db_run("""INSERT INTO rules (id,name,condition_type,condition_value,destination_folder,
                        rename_template,priority,enabled,created_at) VALUES (?,?,?,?,?,?,?,?,?)""",
                    (rid, rd["name"], rd["condition_type"], cv,
-                    rd["destination_folder"], rd["rename_template"], count + i, now))
+                    rd["destination_folder"], rd["rename_template"], count + i, 1, now))
             existing_keys.add(key)  # update snapshot so same-call duplicates are caught too
             row = db_one("SELECT * FROM rules WHERE id=?", (rid,))
             if row: added_rules.append(row)
@@ -550,45 +550,6 @@ def preview_org(data: OrganizeRequest):
             out.append({"original_name": fn, "new_name": fn, "destination_folder": "Unsorted",
                         "rule_name": "No matching rule", "rule_id": None, "matched": False})
     return out
-
-# ── Activity ──────────────────────────────────────────────────────────────────
-
-@api.get("/rules/export")
-def export_rules():
-    rules = db_all("SELECT * FROM rules ORDER BY priority")
-    return rules  # returns as JSON array
-
-class ImportRules(BaseModel):
-    rules: List[dict]
-    replace: bool = False  # if True, delete all existing rules first
-
-@api.post("/rules/import")
-def import_rules(data: ImportRules):
-    if data.replace:
-        db_run("DELETE FROM rules")
-
-    existing_rules = db_all("SELECT condition_type, condition_value FROM rules")
-    existing_keys = { _cv_key(r["condition_type"], r["condition_value"]) for r in existing_rules }
-    count = db_one("SELECT COUNT(*) AS c FROM rules")["c"]
-    added, skipped = 0, 0
-
-    for i, rule in enumerate(data.rules):
-        key = _cv_key(rule.get("condition_type",""), rule.get("condition_value",""))
-        if not data.replace and key in existing_keys:
-            skipped += 1
-            continue
-        rid = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
-        db_run("""INSERT INTO rules (id,name,condition_type,condition_value,destination_folder,
-                   rename_template,priority,enabled,created_at) VALUES (?,?,?,?,?,?,?,?,?)""",
-               (rid, rule.get("name","Imported Rule"), rule.get("condition_type","extension"),
-                rule.get("condition_value",""), rule.get("destination_folder",""),
-                rule.get("rename_template","{date}_{originalname_cleaned}"),
-                count + i, 1 if rule.get("enabled", True) else 0, now))
-        existing_keys.add(key)
-        added += 1
-
-    return {"added": added, "skipped": skipped}
 
 @api.get("/activity")
 def get_activity(limit: int = Query(50, ge=1, le=500)):
