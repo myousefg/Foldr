@@ -120,12 +120,19 @@ def clean_filename(name: str) -> str:
     name = re.sub(r'[^a-z0-9\-]', '', name).strip('-')
     return name or 'file'
 
-def apply_template(template: str, filename: str, seq: int, category: str) -> str:
+def apply_template(template: str, filename: str, seq: int, category: str, auto_clean: bool = True) -> str:
     if not template:
         return filename
     parts = filename.rsplit('.', 1)
     name = parts[0]; ext = ('.' + parts[1]) if len(parts) > 1 else ''
     now = datetime.now()
+
+    # Option B contract:
+    #   {originalname_cleaned} → ALWAYS cleans, regardless of auto_clean setting.
+    #     The token name is the explicit instruction. If you typed it, you want it.
+    #   {originalname}         → ALWAYS raw, regardless of auto_clean setting.
+    #   auto_clean only decides which fallback template resolve_tmpl picks when
+    #     the rule's rename_template field is left empty (see _process / preview_org).
     r = template
     r = r.replace("{date}", now.strftime("%Y-%m-%d"))
     r = r.replace("{YYYY-MM-DD}", now.strftime("%Y-%m-%d"))
@@ -133,8 +140,8 @@ def apply_template(template: str, filename: str, seq: int, category: str) -> str
     r = r.replace("{MM}", now.strftime("%m"))
     r = r.replace("{DD}", now.strftime("%d"))
     r = r.replace("{originalname}", name)
-    r = r.replace("{originalname_cleaned}", clean_filename(name))
-    r = r.replace("{cleaned_name}", clean_filename(name))
+    r = r.replace("{originalname_cleaned}", clean_filename(name))  # always clean
+    r = r.replace("{cleaned_name}", clean_filename(name))          # always clean
     r = r.replace("{sequence}", str(seq).zfill(3))
     r = r.replace("{category}", category.lower().replace(' ', '-'))
     r = re.sub(r'[-_]{2,}', '_', r).strip('_-')
@@ -262,8 +269,35 @@ class FoldrHandler(FileSystemEventHandler):
         if not rule: return
         dest_dir = resolve_dest(rule["destination_folder"], settings)
         seq = next_seq(rule["destination_folder"])
-        tmpl = rule.get("rename_template") or settings.get("default_rename_template", "{date}_{originalname_cleaned}")
-        new_name = apply_template(tmpl, filename, seq, rule["destination_folder"])
+        # ── Template resolution ───────────────────────────────────────────
+        # Option B contract:
+        #   {originalname_cleaned} in an EXPLICIT rule template → always cleans.
+        #   auto_clean flag only controls two things:
+        #     1. Empty rule template fallback: ON→{originalname_cleaned}, OFF→{originalname}
+        #     2. Global default fallback: OFF swaps {originalname_cleaned}→{originalname}
+        #        so the global default also respects the setting when no rule overrides it.
+        rule_tmpl = rule.get("rename_template")
+        if rule_tmpl is None:
+            # No rule template — use global default, but honour auto_clean by
+            # swapping the token so the user's global preference is respected.
+            tmpl = settings.get("default_rename_template", "{date}_{originalname_cleaned}")
+            if not auto_clean:
+                tmpl = tmpl.replace("{originalname_cleaned}", "{originalname}") \
+                           .replace("{cleaned_name}", "{originalname}")
+        elif rule_tmpl == "":
+            # Empty = no rename. auto_clean decides whether to clean the name.
+            tmpl = "{originalname_cleaned}" if auto_clean else "{originalname}"
+        else:
+            # Explicit rule template — rendered exactly as written.
+            # {originalname_cleaned} always cleans; auto_clean is irrelevant here.
+            tmpl = rule_tmpl
+        # ─────────────────────────────────────────────────────────────────
+
+        # Read auto_clean_names flag (default ON).
+        # This was the root cause: flag was saved to DB but never read here.
+        auto_clean = bool(settings.get("auto_clean_names", 1))
+
+        new_name = apply_template(tmpl, filename, seq, rule["destination_folder"], auto_clean=auto_clean)
         proposed = unique_path(os.path.join(dest_dir, new_name))
 
         if settings.get("preview_before_apply", 1):
@@ -648,12 +682,22 @@ class OrganizeRequest(BaseModel):
 @api.post("/organize/preview")
 def preview_org(data: OrganizeRequest):
     settings = db_one("SELECT * FROM settings WHERE id='default'") or {}
+    auto_clean = bool(settings.get("auto_clean_names", 1))
     out = []
     for fn in data.filenames:
         rule = match_rule(fn)
         if rule:
-            tmpl = rule.get("rename_template") or settings.get("default_rename_template","")
-            new_name = apply_template(tmpl, fn, next_seq(rule["destination_folder"]), rule["destination_folder"])
+            rule_tmpl = rule.get("rename_template")
+            if rule_tmpl is None:
+                tmpl = settings.get("default_rename_template", "{date}_{originalname_cleaned}")
+                if not auto_clean:
+                    tmpl = tmpl.replace("{originalname_cleaned}", "{originalname}") \
+                               .replace("{cleaned_name}", "{originalname}")
+            elif rule_tmpl == "":
+                tmpl = "{originalname_cleaned}" if auto_clean else "{originalname}"
+            else:
+                tmpl = rule_tmpl
+            new_name = apply_template(tmpl, fn, next_seq(rule["destination_folder"]), rule["destination_folder"], auto_clean=auto_clean)
             dest = resolve_dest(rule["destination_folder"], settings)
             out.append({"original_name": fn, "new_name": new_name,
                         "destination_folder": dest, "rule_name": rule["name"],
