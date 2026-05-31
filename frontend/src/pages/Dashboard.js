@@ -20,6 +20,7 @@ export default function Dashboard() {
   const [loading, setLoading]     = useState(false);
   const lastActivityId             = useRef(null);
   const abortRef                   = useRef(null);
+  const seenPendingIds             = useRef(new Set()); // IDs already shown to user — never re-auto-select
 
   const fetchAll = useCallback(async () => {
     // Cancel any in-flight request from the previous interval tick
@@ -42,7 +43,35 @@ export default function Dashboard() {
       });
       setSettings(cfg);
       setPending(pend);
-      setSelected(new Set(pend.map(p => p.id)));
+
+      // ── Selection hygiene ─────────────────────────────────────────────
+      // NEVER call setSelected(new Set(pend.map(p => p.id))) here.
+      // That resets the user's manual deselections every 4 s (the bug).
+      //
+      // Instead:
+      //  1. Remove IDs that are no longer pending (applied/skipped elsewhere)
+      //  2. Auto-select only brand-new items (IDs we have never seen before)
+      //  3. Leave everything else exactly as the user left it
+      setSelected(prev => {
+        const pendingIds = new Set(pend.map(p => p.id));
+
+        // Step 1 — prune stale selections
+        const next = new Set([...prev].filter(id => pendingIds.has(id)));
+
+        // Step 2 — auto-select genuinely new arrivals
+        pend.forEach(p => {
+          if (!seenPendingIds.current.has(p.id)) {
+            next.add(p.id);
+          }
+        });
+
+        // Step 3 — mark everything currently pending as "seen"
+        pend.forEach(p => seenPendingIds.current.add(p.id));
+
+        return next;
+      });
+      // ─────────────────────────────────────────────────────────────────
+
       // Update tray badge
       if (isElectron) window.electronAPI.setTrayBadge(pend.length);
     } catch (e) {
