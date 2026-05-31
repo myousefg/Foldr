@@ -669,6 +669,23 @@ def get_stats():
 def get_folders():
     return db_all("SELECT folder,COUNT(*) AS file_count FROM organized_files GROUP BY folder ORDER BY file_count DESC")
 
+@api.get("/folders/{folder_name}")
+def get_folder_files(folder_name: str):
+    rows = db_all(
+        """SELECT new_name AS filename, new_path AS path,
+                  file_type, organized_at
+           FROM organized_files
+           WHERE folder=?
+           ORDER BY organized_at DESC""",
+        (folder_name,)
+    )
+    if not rows:
+        # Distinguish empty folder from folder that never existed
+        exists = db_one("SELECT 1 AS found FROM organized_files WHERE folder=? LIMIT 1", (folder_name,))
+        if not exists:
+            raise HTTPException(404, f"Folder '{folder_name}' not found")
+    return rows
+
 @api.get("/")
 def root(): return {"message": "Foldr backend running"}
 
