@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { activityApi, pendingApi } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -105,6 +105,25 @@ export default function ActivityLog() {
     ? `Please review files first before undo (${pendingCount} file${pendingCount !== 1 ? 's' : ''} pending)`
     : 'Undo — move file back to original location';
 
+  // Keep a ref to filtered so the Ctrl+Z handler always sees the latest list
+  const filteredRef = useRef([]);
+
+  // Ctrl+Z — undo the most recent (top) non-undone entry visible in the current filter
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+        // Don't fire if focus is inside a text input
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        e.preventDefault();
+        const top = filteredRef.current.find(entry => !entry.undone);
+        if (top) undo(top.id);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [undoBlocked]);
+
   return (
     <div className="space-y-6 animate-fade-in" data-testid="activity-page">
       {/* Header */}
@@ -202,16 +221,19 @@ export default function ActivityLog() {
       ) : (
         <div className="space-y-2">
           {/* Column headers */}
-          <div className="grid grid-cols-[80px_1fr_1fr_180px_64px] gap-3 px-4 pb-1">
+          <div className="grid grid-cols-[80px_1fr_1fr_180px_96px] gap-3 px-4 pb-1">
             {['Time','Original','Renamed to','Destination',''].map((h,i) => (
               <span key={i} className="text-[10px] uppercase tracking-widest text-muted-foreground">{h}</span>
             ))}
           </div>
 
+          {/* Sync ref so Ctrl+Z always sees latest filtered list */}
+          {(() => { filteredRef.current = filtered; return null; })()}
+
           {filtered.map(entry => (
             <div
               key={entry.id}
-              className={`grid grid-cols-[80px_1fr_1fr_180px_64px] gap-3 items-center border rounded-lg px-4 py-3 transition-colors ${
+              className={`grid grid-cols-[80px_1fr_1fr_180px_96px] gap-3 items-center border rounded-lg px-4 py-3 transition-colors ${
                 entry.undone ? 'opacity-40 bg-muted/10' : 'bg-background hover:bg-muted/20'
               }`}
             >
@@ -230,12 +252,12 @@ export default function ActivityLog() {
                   {entry.destination_folder}
                 </Badge>
               </div>
-              <div className="flex items-center justify-end gap-1.5 shrink-0">
+              <div className="flex items-center justify-end gap-2 shrink-0">
                 {entry.undone && <span className="text-[9px] text-muted-foreground uppercase tracking-wider">undone</span>}
                 {isElectron && entry.new_path && !entry.undone && (
                   <button
                     onClick={() => openFolder(entry.new_path)}
-                    className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors"
+                    className="text-muted-foreground hover:text-foreground w-8 h-8 flex items-center justify-center rounded transition-colors"
                     title="Open folder"
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
@@ -246,13 +268,14 @@ export default function ActivityLog() {
                     onClick={() => undo(entry.id)}
                     disabled={undoBlocked}
                     title={undoTooltip}
-                    className={`p-1 rounded transition-colors ${
+                    className={`flex items-center gap-1.5 h-8 px-2 rounded transition-colors min-w-[32px] ${
                       undoBlocked
                         ? 'text-muted-foreground/30 cursor-not-allowed'
-                        : 'text-muted-foreground hover:text-foreground cursor-pointer'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer'
                     }`}
                   >
-                    <RotateCcw className="w-3.5 h-3.5" />
+                    <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                    <span className="text-xs font-medium">Undo</span>
                   </button>
                 )}
               </div>

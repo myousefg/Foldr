@@ -24,40 +24,14 @@ let mainWindow  = null;
 let tray        = null;
 let backendProc = null;
 let isQuitting  = false;
+let monitoringEnabled = true; // mirrors backend state for tray menu label
 
-// ── Tray icon builder ─────────────────────────────────────────────────────────
-function createTrayIcon(pendingCount = 0) {
-  const size = 16;
-  const data = Buffer.alloc(size * size * 4, 0);
+// ── Tray icon ─────────────────────────────────────────────────────────────────
+// Resolves to electron/assets/icon.ico (multi-res: 16/32/48/64/128/256)
+const TRAY_ICON_PATH = path.join(__dirname, 'assets', 'icon.ico');
 
-  const set = (x, y, r, g, b, a = 255) => {
-    if (x < 0 || x >= size || y < 0 || y >= size) return;
-    const i = (y * size + x) * 4;
-    data[i] = r; data[i+1] = g; data[i+2] = b; data[i+3] = a;
-  };
-
-  // Indigo folder body (#6366f1 = 99,102,241)
-  const [R, G, B] = [99, 102, 241];
-
-  // Tab top-left
-  for (let x = 1; x <= 5; x++) { set(x, 2, R, G, B); set(x, 3, R, G, B); }
-  set(6, 3, R, G, B);
-
-  // Folder body rows 3–13
-  for (let y = 3; y <= 13; y++) {
-    for (let x = 1; x <= 14; x++) set(x, y, R, G, B);
-  }
-
-  // Red badge dot if pending files exist
-  if (pendingCount > 0) {
-    for (let x = 10; x <= 14; x++) {
-      for (let y = 0; y <= 4; y++) {
-        set(x, y, 239, 68, 68); // red #ef4444
-      }
-    }
-  }
-
-  return nativeImage.createFromBitmap(data, { width: size, height: size, scaleFactor: 1 });
+function createTrayIcon() {
+  return nativeImage.createFromPath(TRAY_ICON_PATH);
 }
 
 // ── Backend ───────────────────────────────────────────────────────────────────
@@ -121,14 +95,45 @@ function createWindow() {
 }
 
 // ── Tray ──────────────────────────────────────────────────────────────────────
-function createTray() {
-  tray = new Tray(createTrayIcon(0));
-  tray.setToolTip('Foldr — File Organizer');
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Open Foldr', click: () => { mainWindow?.show(); mainWindow?.focus(); } },
+function buildTrayMenu() {
+  return Menu.buildFromTemplate([
+    {
+      label: 'Open Foldr',
+      click: () => { mainWindow?.show(); mainWindow?.focus(); },
+    },
     { type: 'separator' },
-    { label: 'Quit Foldr', click: () => { isQuitting = true; app.quit(); } },
-  ]));
+    {
+      label: monitoringEnabled ? 'Pause Monitoring' : 'Resume Monitoring',
+      click: async () => {
+        const postData = JSON.stringify({ monitoring_enabled: !monitoringEnabled });
+        const req = http.request(
+          { hostname: '127.0.0.1', port: BACKEND_PORT, path: '/api/settings',
+            method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) } },
+          (res) => {
+            if (res.statusCode === 200) {
+              monitoringEnabled = !monitoringEnabled;
+              tray.setContextMenu(buildTrayMenu());
+              tray.setToolTip(monitoringEnabled ? 'Foldr — File Organizer' : 'Foldr — Monitoring paused');
+            }
+          }
+        );
+        req.on('error', e => console.warn('[foldr] Could not toggle monitoring from tray:', e.message));
+        req.write(postData);
+        req.end();
+      },
+    },
+    { type: 'separator' },
+    {
+      label: 'Exit',
+      click: () => { isQuitting = true; app.quit(); },
+    },
+  ]);
+}
+
+function createTray() {
+  tray = new Tray(createTrayIcon());
+  tray.setToolTip('Foldr — File Organizer');
+  tray.setContextMenu(buildTrayMenu());
   tray.on('click', () => { mainWindow?.show(); mainWindow?.focus(); });
 }
 
@@ -163,14 +168,13 @@ ipcMain.handle('show-notification', (_, { title, body }) => {
   }
 });
 
-// Tray badge — updates icon and tooltip
+// Tray badge — updates tooltip only (badge overlay is handled by the OS)
 ipcMain.handle('set-tray-badge', (_, count) => {
   if (!tray) return;
-  tray.setImage(createTrayIcon(count));
   tray.setToolTip(
     count > 0
       ? `Foldr — ${count} file${count !== 1 ? 's' : ''} pending review`
-      : 'Foldr — File Organizer'
+      : monitoringEnabled ? 'Foldr — File Organizer' : 'Foldr — Monitoring paused'
   );
 });
 
