@@ -19,11 +19,17 @@ export default function Dashboard() {
   const [showPending, setShowPending] = useState(false);
   const [loading, setLoading]     = useState(false);
   const lastActivityId             = useRef(null);
+  const abortRef                   = useRef(null);
 
   const fetchAll = useCallback(async () => {
+    // Cancel any in-flight request from the previous interval tick
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+    const signal = abortRef.current.signal;
+
     try {
       const [s, cfg, pend] = await Promise.all([
-        statsApi.get(), settingsApi.get(), pendingApi.getAll()
+        statsApi.get(signal), settingsApi.get(signal), pendingApi.getAll(signal)
       ]);
       setStats(prev => {
         // Fire notification when a NEW activity entry appears
@@ -39,7 +45,11 @@ export default function Dashboard() {
       setSelected(new Set(pend.map(p => p.id)));
       // Update tray badge
       if (isElectron) window.electronAPI.setTrayBadge(pend.length);
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      // Ignore errors from intentionally aborted requests
+      if (e.name === 'AbortError' || e.name === 'CanceledError') return;
+      console.error(e);
+    }
   }, []);
 
   // Seed lastActivityId on first load
@@ -52,7 +62,10 @@ export default function Dashboard() {
   useEffect(() => {
     fetchAll();
     const id = setInterval(fetchAll, 4000);
-    return () => clearInterval(id);
+    return () => {
+      clearInterval(id);
+      abortRef.current?.abort();
+    };
   }, [fetchAll]);
 
   const toggleMonitoring = async () => {
