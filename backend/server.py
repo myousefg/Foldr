@@ -242,20 +242,26 @@ def do_move(src, dst, orig_name, new_name, folder, rule_id, rule_name):
     ext = orig_name.rsplit('.', 1)[1].lower() if '.' in orig_name else 'unknown'
     fid = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
+
+    # Store src_path (resolved absolute path), NOT the raw `src` string.
+    # If src was a relative path or contained symlinks, storing `src` would
+    # make undo_activity restore to the wrong location.
+    abs_src = str(src_path)
+
     try:
         db_run("""INSERT INTO organized_files
             (id,original_name,original_path,new_name,new_path,folder,file_type,organized_at,rule_id)
             VALUES (?,?,?,?,?,?,?,?,?)""",
-            (fid, orig_name, src, new_name, final_dst, folder, ext, now, rule_id))
+            (fid, orig_name, abs_src, new_name, final_dst, folder, ext, now, rule_id))
         db_run("""INSERT INTO activity_log
             (id,original_name,original_path,new_name,new_path,destination_folder,
              rule_name,rule_id,timestamp,undone,file_type,file_id)
             VALUES (?,?,?,?,?,?,?,?,?,0,?,?)""",
-            (str(uuid.uuid4()), orig_name, src, new_name, final_dst, folder,
+            (str(uuid.uuid4()), orig_name, abs_src, new_name, final_dst, folder,
              rule_name, rule_id, now, ext, fid))
     except Exception as db_err:
         # File was moved successfully — don't undo. Log the discrepancy.
-        log.error(f"DB log failed after successful move {src} → {final_dst}: {db_err}")
+        log.error(f"DB log failed after successful move {abs_src} → {final_dst}: {db_err}")
 
     log.info(f"Moved: {orig_name} -> {final_dst}")
     return final_dst
@@ -756,28 +762,34 @@ def undo_activity(aid: str):
     # ─────────────────────────────────────────────────────────────────────────
 
     if act.get("new_path") and act.get("original_path") and os.path.exists(act["new_path"]):
-        try:
-            src_undo = Path(act["new_path"]).resolve()
-            dst_undo = Path(act["original_path"]).resolve()
-            if not src_undo.is_file():
-                raise ValueError("Undo source is not a regular file")
-            dst_undo.parent.mkdir(parents=True, exist_ok=True)
+        src_undo  = Path(act["new_path"]).resolve()
+        dst_undo  = Path(act["original_path"]).resolve()   # stored as absolute — see do_move
+        final_dst = None
 
-            # Compute the real final destination before moving so we can
-            # suppress the watchdog for exactly that path.
+        log.info(f"Undo [{aid}]: src={src_undo}  target={dst_undo}")
+
+        if not src_undo.is_file():
+            raise HTTPException(500, f"Undo failed: source file no longer exists at {src_undo}")
+
+        dst_undo.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
             with _move_lock:
+                # unique_path() ensures we never overwrite if original slot is
+                # already taken (e.g. user created a new file at that location).
+                # AC: "jika original_path sudah ditempati, gunakan unique_path()"
                 final_dst = unique_path(str(dst_undo))
 
+                if final_dst != str(dst_undo):
+                    log.info(f"Undo [{aid}]: original slot occupied — "
+                             f"restoring to {final_dst} instead of {dst_undo}")
+
                 # ── Loop prevention ──────────────────────────────────────────
-                # shutil.move back into the monitored folder fires watchdog's
-                # on_moved / on_created, which would re-queue the file and
-                # restart the whole organize cycle.
-                # Registering both the original path AND the unique final path
-                # in _pending_paths (with a 10-second TTL) makes _handle()
-                # skip the event entirely.
+                # Register both paths in _pending_paths before the move so the
+                # watchdog skips the event and doesn't re-queue the file.
                 with _pending_lock:
                     _pending_paths.add(final_dst)
-                    _pending_paths.add(str(dst_undo))   # in case unique_path changed nothing
+                    _pending_paths.add(str(dst_undo))
                 def _release(paths):
                     for p in paths:
                         _pending_paths.discard(p)
@@ -786,8 +798,11 @@ def undo_activity(aid: str):
 
                 shutil.move(str(src_undo), final_dst)
 
-        except Exception as e:
-            log.warning(f"Undo failed: {e}")
+            log.info(f"Undo [{aid}]: moved to {final_dst}")
+
+        except (OSError, shutil.Error) as e:
+            log.error(f"Undo [{aid}]: move failed {src_undo} → {final_dst or dst_undo} | {e}")
+            raise HTTPException(500, f"Undo failed: could not move file back ({e})")
 
     db_run("UPDATE activity_log SET undone=1 WHERE id=?", (aid,))
     if act.get("file_id"):
