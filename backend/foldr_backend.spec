@@ -24,6 +24,7 @@ exe = EXE(pyz, a.scripts, a.binaries, a.zipfiles, a.datas,
     name='foldr-backend',
     debug=False, bootloader_ignore_signals=False,
     strip=False, upx=True,
-    console=False,   # no console window
+    console=False,          # no console window
     onefile=True,
+    version='version_info.txt',   # embeds version into Properties > Details
 )
