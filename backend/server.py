@@ -2,7 +2,7 @@
 Foldr Native Backend
 FastAPI + SQLite + watchdog (real folder monitoring + file moves)
 """
-import os, re, shutil, sqlite3, logging, threading, uuid
+import os, re, shutil, sqlite3, logging, threading, uuid, time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -194,46 +194,71 @@ def next_seq(folder: str) -> int:
     return (r["c"] if r else 0) + 1
 
 # ── Move helper ───────────────────────────────────────────────────────────────
+_MOVE_MAX_RETRIES = 3
+_MOVE_RETRY_DELAY = 0.1  # seconds
+
 def do_move(src, dst, orig_name, new_name, folder, rule_id, rule_name):
+    # Validate source exists and is a real file (not a symlink escape)
+    src_path = Path(src).resolve()
+    if not src_path.is_file():
+        log.warning(f"do_move: source does not exist or is not a file: {src}")
+        return None
+
+    # Validate destination directory does not escape via traversal
+    dst_path = Path(dst).resolve()
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # ── Atomic unique_path + shutil.move under _move_lock ────────────────────
+    # The lock serialises all do_move calls so two threads can never receive
+    # the same free path from unique_path() and race to shutil.move() it.
+    #
+    # Retry loop handles the residual TOCTOU window where a process outside
+    # Foldr creates the file between our os.path.exists check and the move.
+    # Each retry re-runs unique_path() inside the lock to get a fresh free
+    # path — we never blindly overwrite on retry.
+    # ─────────────────────────────────────────────────────────────────────────
+    final_dst = None
+    last_err  = None
+
+    for attempt in range(1, _MOVE_MAX_RETRIES + 1):
+        try:
+            with _move_lock:
+                candidate = unique_path(str(dst_path))
+                shutil.move(str(src_path), candidate)
+                final_dst = candidate
+            break   # success — exit retry loop
+        except (OSError, shutil.Error) as e:
+            last_err = e
+            log.warning(f"do_move attempt {attempt}/{_MOVE_MAX_RETRIES} failed ({e}); "
+                        f"{'retrying' if attempt < _MOVE_MAX_RETRIES else 'giving up'}")
+            if attempt < _MOVE_MAX_RETRIES:
+                time.sleep(_MOVE_RETRY_DELAY)
+
+    if final_dst is None:
+        log.error(f"Move failed after {_MOVE_MAX_RETRIES} attempts: {src} → {dst} | {last_err}")
+        return None
+
+    new_name = os.path.basename(final_dst)   # reflect any _001 suffix from unique_path
+    ext = orig_name.rsplit('.', 1)[1].lower() if '.' in orig_name else 'unknown'
+    fid = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
     try:
-        # Validate source exists and is a real file (not a symlink escape)
-        src_path = Path(src).resolve()
-        if not src_path.is_file():
-            log.warning(f"do_move: source does not exist or is not a file: {src}")
-            return None
-        # Validate destination directory does not escape via traversal
-        dst_path = Path(dst).resolve()
-        dst_dir  = dst_path.parent
-        dst_dir.mkdir(parents=True, exist_ok=True)
-
-        # ── Atomic: unique_path + shutil.move must not race ──────────────
-        # Without a lock, two concurrent do_move calls can both call
-        # unique_path(), get the same free path, and then one overwrites
-        # the other during shutil.move(). The lock makes them serial.
-        with _move_lock:
-            dst = unique_path(str(dst_path))
-            shutil.move(str(src_path), dst)
-        # ─────────────────────────────────────────────────────────────────
-
-        new_name = os.path.basename(dst)   # reflect any _001 suffix added by unique_path
-        ext = orig_name.rsplit('.', 1)[1].lower() if '.' in orig_name else 'unknown'
-        fid = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
         db_run("""INSERT INTO organized_files
             (id,original_name,original_path,new_name,new_path,folder,file_type,organized_at,rule_id)
             VALUES (?,?,?,?,?,?,?,?,?)""",
-            (fid, orig_name, src, new_name, dst, folder, ext, now, rule_id))
+            (fid, orig_name, src, new_name, final_dst, folder, ext, now, rule_id))
         db_run("""INSERT INTO activity_log
             (id,original_name,original_path,new_name,new_path,destination_folder,
              rule_name,rule_id,timestamp,undone,file_type,file_id)
             VALUES (?,?,?,?,?,?,?,?,?,0,?,?)""",
-            (str(uuid.uuid4()), orig_name, src, new_name, dst, folder,
+            (str(uuid.uuid4()), orig_name, src, new_name, final_dst, folder,
              rule_name, rule_id, now, ext, fid))
-        log.info(f"Moved: {orig_name} -> {dst}")
-        return dst
-    except Exception as e:
-        log.error(f"Move failed {src}: {e}")
-        return None
+    except Exception as db_err:
+        # File was moved successfully — don't undo. Log the discrepancy.
+        log.error(f"DB log failed after successful move {src} → {final_dst}: {db_err}")
+
+    log.info(f"Moved: {orig_name} -> {final_dst}")
+    return final_dst
 
 # ── Watchdog ──────────────────────────────────────────────────────────────────
 class FoldrHandler(FileSystemEventHandler):
