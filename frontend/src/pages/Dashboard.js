@@ -94,7 +94,20 @@ export default function Dashboard() {
     setLoading(true);
     try {
       const result = await pendingApi.apply([...selected]);
-      toast.success(`Applied ${result.applied} move${result.applied !== 1 ? 's' : ''}`);
+
+      // result now returns { applied, stale }
+      if (result.applied > 0 && result.stale > 0) {
+        toast.success(`Moved ${result.applied} file${result.applied !== 1 ? 's' : ''}`, {
+          description: `${result.stale} file${result.stale !== 1 ? 's were' : ' was'} already gone and removed from the queue.`,
+        });
+      } else if (result.applied > 0) {
+        toast.success(`Moved ${result.applied} file${result.applied !== 1 ? 's' : ''}`);
+      } else if (result.stale > 0) {
+        toast.warning(`No files moved — all ${result.stale} selected file${result.stale !== 1 ? 's were' : ' was'} already deleted.`);
+      } else {
+        toast.error('No files were moved');
+      }
+
       setShowPending(false);
       fetchAll();
     } catch { toast.error('Apply failed'); }
@@ -236,7 +249,7 @@ export default function Dashboard() {
       </div>
 
       {/* Pending review dialog */}
-      <Dialog open={showPending} onOpenChange={setShowPending}>
+      <Dialog open={showPending} onOpenChange={(open) => { setShowPending(open); if (open) fetchAll(); }}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
             <DialogTitle className="text-base font-semibold">Review Pending Moves</DialogTitle>

@@ -198,8 +198,17 @@ def do_move(src, dst, orig_name, new_name, folder, rule_id, rule_name):
         dst_path = Path(dst).resolve()
         dst_dir  = dst_path.parent
         dst_dir.mkdir(parents=True, exist_ok=True)
-        dst = unique_path(str(dst_path))
-        shutil.move(str(src_path), dst)
+
+        # ── Atomic: unique_path + shutil.move must not race ──────────────
+        # Without a lock, two concurrent do_move calls can both call
+        # unique_path(), get the same free path, and then one overwrites
+        # the other during shutil.move(). The lock makes them serial.
+        with _move_lock:
+            dst = unique_path(str(dst_path))
+            shutil.move(str(src_path), dst)
+        # ─────────────────────────────────────────────────────────────────
+
+        new_name = os.path.basename(dst)   # reflect any _001 suffix added by unique_path
         ext = orig_name.rsplit('.', 1)[1].lower() if '.' in orig_name else 'unknown'
         fid = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
@@ -273,6 +282,7 @@ _observer: Optional[Observer] = None
 _obs_lock = threading.Lock()
 _pending_paths: set = set()   # dedup: paths currently being processed
 _pending_lock = threading.Lock()
+_move_lock = threading.Lock()  # ensures unique_path + shutil.move are atomic
 
 def start_watcher(folder):
     global _observer
@@ -569,24 +579,59 @@ class ApplyPending(BaseModel):
 
 @api.get("/pending")
 def get_pending():
-    return db_all("SELECT * FROM pending_files ORDER BY detected_at DESC")
+    rows = db_all("SELECT * FROM pending_files ORDER BY detected_at DESC")
+    # Auto-clean stale records: original file was deleted before user reviewed it.
+    # This ensures the frontend never shows a preview card for a file that is gone.
+    stale_ids = [r["id"] for r in rows if not Path(r["original_path"]).is_file()]
+    for sid in stale_ids:
+        db_run("DELETE FROM pending_files WHERE id=?", (sid,))
+        log.info(f"Auto-cleaned stale pending record: {sid}")
+    active = [r for r in rows if r["id"] not in set(stale_ids)]
+    return active
 
 @api.post("/pending/apply")
 def apply_pending(data: ApplyPending):
-    count = 0
+    applied = 0
+    stale   = 0  # files that were deleted before the user hit Apply
+
     for pid in data.ids:
         row = db_one("SELECT * FROM pending_files WHERE id=?", (pid,))
-        if not row: continue
+        if not row:
+            continue  # already processed or skipped
+
+        # ── Stale-file guard ──────────────────────────────────────────────
+        # If the source file no longer exists (user deleted it manually, or a
+        # previous apply already moved it), remove the pending record and skip.
+        # do_move() also checks this internally, but doing it here gives us an
+        # explicit stale count and avoids unnecessary rule/path lookups.
+        if not Path(row["original_path"]).is_file():
+            db_run("DELETE FROM pending_files WHERE id=?", (pid,))
+            log.info(f"apply_pending: stale record removed (file gone): {row['original_path']}")
+            stale += 1
+            continue
+        # ─────────────────────────────────────────────────────────────────
+
         rule = db_one("SELECT * FROM rules WHERE id=?", (row["rule_id"],))
-        if not rule: db_run("DELETE FROM pending_files WHERE id=?", (pid,)); continue
-        final = unique_path(row["proposed_path"])
-        result = do_move(row["original_path"], final,
-                         os.path.basename(row["original_path"]),
-                         os.path.basename(final),
-                         row["destination_folder"], row["rule_id"], row["rule_name"])
+        if not rule:
+            db_run("DELETE FROM pending_files WHERE id=?", (pid,))
+            continue
+
+        # Pass proposed_path directly — do_move calls unique_path() under
+        # _move_lock, so there is no double-unique_path race here.
+        result = do_move(
+            row["original_path"],
+            row["proposed_path"],
+            os.path.basename(row["original_path"]),
+            row["proposed_name"],
+            row["destination_folder"],
+            row["rule_id"],
+            row["rule_name"],
+        )
         db_run("DELETE FROM pending_files WHERE id=?", (pid,))
-        if result: count += 1
-    return {"applied": count}
+        if result:
+            applied += 1
+
+    return {"applied": applied, "stale": stale}
 
 @api.delete("/pending/{pid}")
 def skip_pending(pid: str):
