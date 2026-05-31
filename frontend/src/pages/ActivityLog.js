@@ -1,25 +1,41 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { activityApi } from '@/lib/api';
+import { activityApi, pendingApi } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
-import { ArrowRight, RotateCcw, Trash2, RefreshCw, ExternalLink, Search, X } from 'lucide-react';
+import { ArrowRight, RotateCcw, Trash2, RefreshCw, ExternalLink, Search, X, Bell } from 'lucide-react';
 
 const isElectron = !!window.electronAPI;
 
 export default function ActivityLog() {
-  const [log, setLog]           = useState([]);
-  const [loading, setLoading]   = useState(false);
-  const [search, setSearch]     = useState('');
+  const [log, setLog]               = useState([]);
+  const [loading, setLoading]       = useState(false);
+  const [search, setSearch]         = useState('');
   const [filterRule, setFilterRule] = useState('ALL');
+  const [pendingCount, setPendingCount] = useState(0); // tracks pending preview items
 
   const fetchLog = useCallback(async () => {
     try { setLog(await activityApi.getAll(200)); } catch { console.error('load log failed'); }
   }, []);
 
-  useEffect(() => { fetchLog(); }, [fetchLog]);
+  // Fetch pending count so we can disable Undo when preview is active.
+  // Polls every 4 s to stay in sync with files arriving while the user
+  // is on this page.
+  const fetchPending = useCallback(async () => {
+    try {
+      const items = await pendingApi.getAll();
+      setPendingCount(items.length);
+    } catch { /* non-fatal */ }
+  }, []);
+
+  useEffect(() => {
+    fetchLog();
+    fetchPending();
+    const id = setInterval(fetchPending, 4000);
+    return () => clearInterval(id);
+  }, [fetchLog, fetchPending]);
 
   // Unique rule names for filter dropdown
   const ruleNames = useMemo(() => {
@@ -43,11 +59,30 @@ export default function ActivityLog() {
   }, [log, search, filterRule]);
 
   const undo = async (id) => {
+    // Re-check pending count right before the call — the periodic poll may
+    // be slightly stale.  The backend also enforces this guard (HTTP 409).
+    if (pendingCount > 0) {
+      toast.warning('Please review the pending files first before using Undo.', {
+        description: 'Open the Dashboard to review and apply (or skip) the pending moves.',
+      });
+      return;
+    }
     try {
       await activityApi.undo(id);
       toast.success('File moved back to original location');
       fetchLog();
-    } catch (e) { toast.error(e.response?.data?.detail || 'Undo failed'); }
+    } catch (e) {
+      const detail = e.response?.data?.detail || 'Undo failed';
+      // Backend returns 409 when pending items exist (race condition guard)
+      if (e.response?.status === 409) {
+        toast.warning(detail, {
+          description: 'Open the Dashboard to review pending files first.',
+        });
+        fetchPending(); // refresh the count so button disables immediately
+      } else {
+        toast.error(detail);
+      }
+    }
   };
 
   const clearAll = async () => {
@@ -63,6 +98,12 @@ export default function ActivityLog() {
     const dir = path.substring(0, path.lastIndexOf(sep));
     if (dir) await window.electronAPI.openFolder(dir);
   };
+
+  // Undo is globally blocked while preview is active
+  const undoBlocked = pendingCount > 0;
+  const undoTooltip = undoBlocked
+    ? `Please review files first before undo (${pendingCount} file${pendingCount !== 1 ? 's' : ''} pending)`
+    : 'Undo — move file back to original location';
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="activity-page">
@@ -83,6 +124,26 @@ export default function ActivityLog() {
       </div>
 
       <Separator />
+
+      {/* ── Pending review warning banner ───────────────────────────────────
+           Shown when there are files waiting for preview. Undo is disabled
+           while this banner is visible to prevent the move→undo→move loop. */}
+      {undoBlocked && (
+        <div className="flex items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-4 py-3">
+          <Bell className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
+              {pendingCount} file{pendingCount !== 1 ? 's are' : ' is'} waiting for review
+            </p>
+            <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
+              Undo is disabled until the pending queue is cleared. Go to Dashboard to review.
+            </p>
+          </div>
+          <Badge variant="outline" className="border-amber-400 text-amber-700 dark:text-amber-400 text-[10px] shrink-0">
+            UNDO LOCKED
+          </Badge>
+        </div>
+      )}
 
       {/* Search + Filter */}
       {log.length > 0 && (
@@ -172,12 +233,25 @@ export default function ActivityLog() {
               <div className="flex items-center justify-end gap-1.5 shrink-0">
                 {entry.undone && <span className="text-[9px] text-muted-foreground uppercase tracking-wider">undone</span>}
                 {isElectron && entry.new_path && !entry.undone && (
-                  <button onClick={() => openFolder(entry.new_path)} className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors" title="Open folder">
+                  <button
+                    onClick={() => openFolder(entry.new_path)}
+                    className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors"
+                    title="Open folder"
+                  >
                     <ExternalLink className="w-3.5 h-3.5" />
                   </button>
                 )}
                 {!entry.undone && (
-                  <button onClick={() => undo(entry.id)} className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors" title="Undo">
+                  <button
+                    onClick={() => undo(entry.id)}
+                    disabled={undoBlocked}
+                    title={undoTooltip}
+                    className={`p-1 rounded transition-colors ${
+                      undoBlocked
+                        ? 'text-muted-foreground/30 cursor-not-allowed'
+                        : 'text-muted-foreground hover:text-foreground cursor-pointer'
+                    }`}
+                  >
                     <RotateCcw className="w-3.5 h-3.5" />
                   </button>
                 )}

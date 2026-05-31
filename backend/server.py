@@ -672,6 +672,20 @@ def undo_activity(aid: str):
     act = db_one("SELECT * FROM activity_log WHERE id=?", (aid,))
     if not act: raise HTTPException(404, "Not found")
     if act.get("undone"): raise HTTPException(400, "Already undone")
+
+    # ── Pending-items guard ──────────────────────────────────────────────────
+    # If there are files waiting in the preview queue, block undo.
+    # Undoing while preview is active would move the file back into the
+    # monitored folder, triggering watchdog to re-queue it — causing an
+    # infinite move → undo → move loop.
+    pending_count = db_one("SELECT COUNT(*) AS c FROM pending_files")["c"]
+    if pending_count > 0:
+        raise HTTPException(
+            409,
+            "Please review the pending files first before using Undo."
+        )
+    # ─────────────────────────────────────────────────────────────────────────
+
     if act.get("new_path") and act.get("original_path") and os.path.exists(act["new_path"]):
         try:
             src_undo = Path(act["new_path"]).resolve()
@@ -679,9 +693,33 @@ def undo_activity(aid: str):
             if not src_undo.is_file():
                 raise ValueError("Undo source is not a regular file")
             dst_undo.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src_undo), str(unique_path(str(dst_undo))))
+
+            # Compute the real final destination before moving so we can
+            # suppress the watchdog for exactly that path.
+            with _move_lock:
+                final_dst = unique_path(str(dst_undo))
+
+                # ── Loop prevention ──────────────────────────────────────────
+                # shutil.move back into the monitored folder fires watchdog's
+                # on_moved / on_created, which would re-queue the file and
+                # restart the whole organize cycle.
+                # Registering both the original path AND the unique final path
+                # in _pending_paths (with a 10-second TTL) makes _handle()
+                # skip the event entirely.
+                with _pending_lock:
+                    _pending_paths.add(final_dst)
+                    _pending_paths.add(str(dst_undo))   # in case unique_path changed nothing
+                def _release(paths):
+                    for p in paths:
+                        _pending_paths.discard(p)
+                threading.Timer(10.0, _release, args=[[final_dst, str(dst_undo)]]).start()
+                # ────────────────────────────────────────────────────────────
+
+                shutil.move(str(src_undo), final_dst)
+
         except Exception as e:
             log.warning(f"Undo failed: {e}")
+
     db_run("UPDATE activity_log SET undone=1 WHERE id=?", (aid,))
     if act.get("file_id"):
         db_run("DELETE FROM organized_files WHERE id=?", (act["file_id"],))
