@@ -2,7 +2,7 @@
 Foldr Native Backend
 FastAPI + SQLite + watchdog (real folder monitoring + file moves)
 """
-import os, re, shutil, sqlite3, logging, threading, uuid
+import os, re, shutil, sqlite3, logging, threading, uuid, time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -120,12 +120,19 @@ def clean_filename(name: str) -> str:
     name = re.sub(r'[^a-z0-9\-]', '', name).strip('-')
     return name or 'file'
 
-def apply_template(template: str, filename: str, seq: int, category: str) -> str:
+def apply_template(template: str, filename: str, seq: int, category: str, auto_clean: bool = True) -> str:
     if not template:
         return filename
     parts = filename.rsplit('.', 1)
     name = parts[0]; ext = ('.' + parts[1]) if len(parts) > 1 else ''
     now = datetime.now()
+
+    # Option B contract:
+    #   {originalname_cleaned} → ALWAYS cleans, regardless of auto_clean setting.
+    #     The token name is the explicit instruction. If you typed it, you want it.
+    #   {originalname}         → ALWAYS raw, regardless of auto_clean setting.
+    #   auto_clean only decides which fallback template resolve_tmpl picks when
+    #     the rule's rename_template field is left empty (see _process / preview_org).
     r = template
     r = r.replace("{date}", now.strftime("%Y-%m-%d"))
     r = r.replace("{YYYY-MM-DD}", now.strftime("%Y-%m-%d"))
@@ -133,8 +140,8 @@ def apply_template(template: str, filename: str, seq: int, category: str) -> str
     r = r.replace("{MM}", now.strftime("%m"))
     r = r.replace("{DD}", now.strftime("%d"))
     r = r.replace("{originalname}", name)
-    r = r.replace("{originalname_cleaned}", clean_filename(name))
-    r = r.replace("{cleaned_name}", clean_filename(name))
+    r = r.replace("{originalname_cleaned}", clean_filename(name))  # always clean
+    r = r.replace("{cleaned_name}", clean_filename(name))          # always clean
     r = r.replace("{sequence}", str(seq).zfill(3))
     r = r.replace("{category}", category.lower().replace(' ', '-'))
     r = re.sub(r'[-_]{2,}', '_', r).strip('_-')
@@ -187,37 +194,77 @@ def next_seq(folder: str) -> int:
     return (r["c"] if r else 0) + 1
 
 # ── Move helper ───────────────────────────────────────────────────────────────
+_MOVE_MAX_RETRIES = 3
+_MOVE_RETRY_DELAY = 0.1  # seconds
+
 def do_move(src, dst, orig_name, new_name, folder, rule_id, rule_name):
+    # Validate source exists and is a real file (not a symlink escape)
+    src_path = Path(src).resolve()
+    if not src_path.is_file():
+        log.warning(f"do_move: source does not exist or is not a file: {src}")
+        return None
+
+    # Validate destination directory does not escape via traversal
+    dst_path = Path(dst).resolve()
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # ── Atomic unique_path + shutil.move under _move_lock ────────────────────
+    # The lock serialises all do_move calls so two threads can never receive
+    # the same free path from unique_path() and race to shutil.move() it.
+    #
+    # Retry loop handles the residual TOCTOU window where a process outside
+    # Foldr creates the file between our os.path.exists check and the move.
+    # Each retry re-runs unique_path() inside the lock to get a fresh free
+    # path — we never blindly overwrite on retry.
+    # ─────────────────────────────────────────────────────────────────────────
+    final_dst = None
+    last_err  = None
+
+    for attempt in range(1, _MOVE_MAX_RETRIES + 1):
+        try:
+            with _move_lock:
+                candidate = unique_path(str(dst_path))
+                shutil.move(str(src_path), candidate)
+                final_dst = candidate
+            break   # success — exit retry loop
+        except (OSError, shutil.Error) as e:
+            last_err = e
+            log.warning(f"do_move attempt {attempt}/{_MOVE_MAX_RETRIES} failed ({e}); "
+                        f"{'retrying' if attempt < _MOVE_MAX_RETRIES else 'giving up'}")
+            if attempt < _MOVE_MAX_RETRIES:
+                time.sleep(_MOVE_RETRY_DELAY)
+
+    if final_dst is None:
+        log.error(f"Move failed after {_MOVE_MAX_RETRIES} attempts: {src} → {dst} | {last_err}")
+        return None
+
+    new_name = os.path.basename(final_dst)   # reflect any _001 suffix from unique_path
+    ext = orig_name.rsplit('.', 1)[1].lower() if '.' in orig_name else 'unknown'
+    fid = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Store src_path (resolved absolute path), NOT the raw `src` string.
+    # If src was a relative path or contained symlinks, storing `src` would
+    # make undo_activity restore to the wrong location.
+    abs_src = str(src_path)
+
     try:
-        # Validate source exists and is a real file (not a symlink escape)
-        src_path = Path(src).resolve()
-        if not src_path.is_file():
-            log.warning(f"do_move: source does not exist or is not a file: {src}")
-            return None
-        # Validate destination directory does not escape via traversal
-        dst_path = Path(dst).resolve()
-        dst_dir  = dst_path.parent
-        dst_dir.mkdir(parents=True, exist_ok=True)
-        dst = unique_path(str(dst_path))
-        shutil.move(str(src_path), dst)
-        ext = orig_name.rsplit('.', 1)[1].lower() if '.' in orig_name else 'unknown'
-        fid = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
         db_run("""INSERT INTO organized_files
             (id,original_name,original_path,new_name,new_path,folder,file_type,organized_at,rule_id)
             VALUES (?,?,?,?,?,?,?,?,?)""",
-            (fid, orig_name, src, new_name, dst, folder, ext, now, rule_id))
+            (fid, orig_name, abs_src, new_name, final_dst, folder, ext, now, rule_id))
         db_run("""INSERT INTO activity_log
             (id,original_name,original_path,new_name,new_path,destination_folder,
              rule_name,rule_id,timestamp,undone,file_type,file_id)
             VALUES (?,?,?,?,?,?,?,?,?,0,?,?)""",
-            (str(uuid.uuid4()), orig_name, src, new_name, dst, folder,
+            (str(uuid.uuid4()), orig_name, abs_src, new_name, final_dst, folder,
              rule_name, rule_id, now, ext, fid))
-        log.info(f"Moved: {orig_name} -> {dst}")
-        return dst
-    except Exception as e:
-        log.error(f"Move failed {src}: {e}")
-        return None
+    except Exception as db_err:
+        # File was moved successfully — don't undo. Log the discrepancy.
+        log.error(f"DB log failed after successful move {abs_src} → {final_dst}: {db_err}")
+
+    log.info(f"Moved: {orig_name} -> {final_dst}")
+    return final_dst
 
 # ── Watchdog ──────────────────────────────────────────────────────────────────
 class FoldrHandler(FileSystemEventHandler):
@@ -253,8 +300,35 @@ class FoldrHandler(FileSystemEventHandler):
         if not rule: return
         dest_dir = resolve_dest(rule["destination_folder"], settings)
         seq = next_seq(rule["destination_folder"])
-        tmpl = rule.get("rename_template") or settings.get("default_rename_template", "{date}_{originalname_cleaned}")
-        new_name = apply_template(tmpl, filename, seq, rule["destination_folder"])
+        # ── Template resolution ───────────────────────────────────────────
+        # Option B contract:
+        #   {originalname_cleaned} in an EXPLICIT rule template → always cleans.
+        #   auto_clean flag only controls two things:
+        #     1. Empty rule template fallback: ON→{originalname_cleaned}, OFF→{originalname}
+        #     2. Global default fallback: OFF swaps {originalname_cleaned}→{originalname}
+        #        so the global default also respects the setting when no rule overrides it.
+        rule_tmpl = rule.get("rename_template")
+        if rule_tmpl is None:
+            # No rule template — use global default, but honour auto_clean by
+            # swapping the token so the user's global preference is respected.
+            tmpl = settings.get("default_rename_template", "{date}_{originalname_cleaned}")
+            if not auto_clean:
+                tmpl = tmpl.replace("{originalname_cleaned}", "{originalname}") \
+                           .replace("{cleaned_name}", "{originalname}")
+        elif rule_tmpl == "":
+            # Empty = no rename. auto_clean decides whether to clean the name.
+            tmpl = "{originalname_cleaned}" if auto_clean else "{originalname}"
+        else:
+            # Explicit rule template — rendered exactly as written.
+            # {originalname_cleaned} always cleans; auto_clean is irrelevant here.
+            tmpl = rule_tmpl
+        # ─────────────────────────────────────────────────────────────────
+
+        # Read auto_clean_names flag (default ON).
+        # This was the root cause: flag was saved to DB but never read here.
+        auto_clean = bool(settings.get("auto_clean_names", 1))
+
+        new_name = apply_template(tmpl, filename, seq, rule["destination_folder"], auto_clean=auto_clean)
         proposed = unique_path(os.path.join(dest_dir, new_name))
 
         if settings.get("preview_before_apply", 1):
@@ -273,6 +347,7 @@ _observer: Optional[Observer] = None
 _obs_lock = threading.Lock()
 _pending_paths: set = set()   # dedup: paths currently being processed
 _pending_lock = threading.Lock()
+_move_lock = threading.Lock()  # ensures unique_path + shutil.move are atomic
 
 def start_watcher(folder):
     global _observer
@@ -569,24 +644,59 @@ class ApplyPending(BaseModel):
 
 @api.get("/pending")
 def get_pending():
-    return db_all("SELECT * FROM pending_files ORDER BY detected_at DESC")
+    rows = db_all("SELECT * FROM pending_files ORDER BY detected_at DESC")
+    # Auto-clean stale records: original file was deleted before user reviewed it.
+    # This ensures the frontend never shows a preview card for a file that is gone.
+    stale_ids = [r["id"] for r in rows if not Path(r["original_path"]).is_file()]
+    for sid in stale_ids:
+        db_run("DELETE FROM pending_files WHERE id=?", (sid,))
+        log.info(f"Auto-cleaned stale pending record: {sid}")
+    active = [r for r in rows if r["id"] not in set(stale_ids)]
+    return active
 
 @api.post("/pending/apply")
 def apply_pending(data: ApplyPending):
-    count = 0
+    applied = 0
+    stale   = 0  # files that were deleted before the user hit Apply
+
     for pid in data.ids:
         row = db_one("SELECT * FROM pending_files WHERE id=?", (pid,))
-        if not row: continue
+        if not row:
+            continue  # already processed or skipped
+
+        # ── Stale-file guard ──────────────────────────────────────────────
+        # If the source file no longer exists (user deleted it manually, or a
+        # previous apply already moved it), remove the pending record and skip.
+        # do_move() also checks this internally, but doing it here gives us an
+        # explicit stale count and avoids unnecessary rule/path lookups.
+        if not Path(row["original_path"]).is_file():
+            db_run("DELETE FROM pending_files WHERE id=?", (pid,))
+            log.info(f"apply_pending: stale record removed (file gone): {row['original_path']}")
+            stale += 1
+            continue
+        # ─────────────────────────────────────────────────────────────────
+
         rule = db_one("SELECT * FROM rules WHERE id=?", (row["rule_id"],))
-        if not rule: db_run("DELETE FROM pending_files WHERE id=?", (pid,)); continue
-        final = unique_path(row["proposed_path"])
-        result = do_move(row["original_path"], final,
-                         os.path.basename(row["original_path"]),
-                         os.path.basename(final),
-                         row["destination_folder"], row["rule_id"], row["rule_name"])
+        if not rule:
+            db_run("DELETE FROM pending_files WHERE id=?", (pid,))
+            continue
+
+        # Pass proposed_path directly — do_move calls unique_path() under
+        # _move_lock, so there is no double-unique_path race here.
+        result = do_move(
+            row["original_path"],
+            row["proposed_path"],
+            os.path.basename(row["original_path"]),
+            row["proposed_name"],
+            row["destination_folder"],
+            row["rule_id"],
+            row["rule_name"],
+        )
         db_run("DELETE FROM pending_files WHERE id=?", (pid,))
-        if result: count += 1
-    return {"applied": count}
+        if result:
+            applied += 1
+
+    return {"applied": applied, "stale": stale}
 
 @api.delete("/pending/{pid}")
 def skip_pending(pid: str):
@@ -603,12 +713,22 @@ class OrganizeRequest(BaseModel):
 @api.post("/organize/preview")
 def preview_org(data: OrganizeRequest):
     settings = db_one("SELECT * FROM settings WHERE id='default'") or {}
+    auto_clean = bool(settings.get("auto_clean_names", 1))
     out = []
     for fn in data.filenames:
         rule = match_rule(fn)
         if rule:
-            tmpl = rule.get("rename_template") or settings.get("default_rename_template","")
-            new_name = apply_template(tmpl, fn, next_seq(rule["destination_folder"]), rule["destination_folder"])
+            rule_tmpl = rule.get("rename_template")
+            if rule_tmpl is None:
+                tmpl = settings.get("default_rename_template", "{date}_{originalname_cleaned}")
+                if not auto_clean:
+                    tmpl = tmpl.replace("{originalname_cleaned}", "{originalname}") \
+                               .replace("{cleaned_name}", "{originalname}")
+            elif rule_tmpl == "":
+                tmpl = "{originalname_cleaned}" if auto_clean else "{originalname}"
+            else:
+                tmpl = rule_tmpl
+            new_name = apply_template(tmpl, fn, next_seq(rule["destination_folder"]), rule["destination_folder"], auto_clean=auto_clean)
             dest = resolve_dest(rule["destination_folder"], settings)
             out.append({"original_name": fn, "new_name": new_name,
                         "destination_folder": dest, "rule_name": rule["name"],
@@ -627,16 +747,63 @@ def undo_activity(aid: str):
     act = db_one("SELECT * FROM activity_log WHERE id=?", (aid,))
     if not act: raise HTTPException(404, "Not found")
     if act.get("undone"): raise HTTPException(400, "Already undone")
+
+    # ── Pending-items guard ──────────────────────────────────────────────────
+    # If there are files waiting in the preview queue, block undo.
+    # Undoing while preview is active would move the file back into the
+    # monitored folder, triggering watchdog to re-queue it — causing an
+    # infinite move → undo → move loop.
+    pending_count = db_one("SELECT COUNT(*) AS c FROM pending_files")["c"]
+    if pending_count > 0:
+        raise HTTPException(
+            409,
+            "Please review the pending files first before using Undo."
+        )
+    # ─────────────────────────────────────────────────────────────────────────
+
     if act.get("new_path") and act.get("original_path") and os.path.exists(act["new_path"]):
+        src_undo  = Path(act["new_path"]).resolve()
+        dst_undo  = Path(act["original_path"]).resolve()   # stored as absolute — see do_move
+        final_dst = None
+
+        log.info(f"Undo [{aid}]: src={src_undo}  target={dst_undo}")
+
+        if not src_undo.is_file():
+            raise HTTPException(500, f"Undo failed: source file no longer exists at {src_undo}")
+
+        dst_undo.parent.mkdir(parents=True, exist_ok=True)
+
         try:
-            src_undo = Path(act["new_path"]).resolve()
-            dst_undo = Path(act["original_path"]).resolve()
-            if not src_undo.is_file():
-                raise ValueError("Undo source is not a regular file")
-            dst_undo.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src_undo), str(unique_path(str(dst_undo))))
-        except Exception as e:
-            log.warning(f"Undo failed: {e}")
+            with _move_lock:
+                # unique_path() ensures we never overwrite if original slot is
+                # already taken (e.g. user created a new file at that location).
+                # AC: "jika original_path sudah ditempati, gunakan unique_path()"
+                final_dst = unique_path(str(dst_undo))
+
+                if final_dst != str(dst_undo):
+                    log.info(f"Undo [{aid}]: original slot occupied — "
+                             f"restoring to {final_dst} instead of {dst_undo}")
+
+                # ── Loop prevention ──────────────────────────────────────────
+                # Register both paths in _pending_paths before the move so the
+                # watchdog skips the event and doesn't re-queue the file.
+                with _pending_lock:
+                    _pending_paths.add(final_dst)
+                    _pending_paths.add(str(dst_undo))
+                def _release(paths):
+                    for p in paths:
+                        _pending_paths.discard(p)
+                threading.Timer(10.0, _release, args=[[final_dst, str(dst_undo)]]).start()
+                # ────────────────────────────────────────────────────────────
+
+                shutil.move(str(src_undo), final_dst)
+
+            log.info(f"Undo [{aid}]: moved to {final_dst}")
+
+        except (OSError, shutil.Error) as e:
+            log.error(f"Undo [{aid}]: move failed {src_undo} → {final_dst or dst_undo} | {e}")
+            raise HTTPException(500, f"Undo failed: could not move file back ({e})")
+
     db_run("UPDATE activity_log SET undone=1 WHERE id=?", (aid,))
     if act.get("file_id"):
         db_run("DELETE FROM organized_files WHERE id=?", (act["file_id"],))
