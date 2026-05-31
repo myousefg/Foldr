@@ -21,7 +21,7 @@ export const organizeApi = {
 };
 
 export const pendingApi = {
-  getAll: ()    => api.get('/pending').then(r => r.data),
+  getAll: (signal) => api.get('/pending', { signal }).then(r => r.data),
   apply:  (ids) => api.post('/pending/apply', { ids }).then(r => r.data),
   skip:   (id)  => api.delete(`/pending/${id}`).then(r => r.data),
   clear:  ()    => api.delete('/pending').then(r => r.data),
@@ -34,12 +34,12 @@ export const activityApi = {
 };
 
 export const settingsApi = {
-  get:    ()     => api.get('/settings').then(r => r.data),
-  update: (data) => api.put('/settings', data).then(r => r.data),
+  get:    (signal) => api.get('/settings', { signal }).then(r => r.data),
+  update: (data)   => api.put('/settings', data).then(r => r.data),
 };
 
 export const statsApi = {
-  get: () => api.get('/stats').then(r => r.data),
+  get: (signal) => api.get('/stats', { signal }).then(r => r.data),
 };
 
 export const foldersApi = {

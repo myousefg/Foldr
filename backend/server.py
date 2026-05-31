@@ -148,11 +148,26 @@ def unique_path(p: str) -> str:
         p = f"{base}_{i:03d}{ext}"; i += 1
     return p
 
+def _safe_resolve(path: Path, base: Path) -> Path:
+    """Resolve *path* and assert it does not escape *base* (prevents path traversal)."""
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(base.resolve())
+    except ValueError:
+        raise HTTPException(400, "Path traversal detected — destination must be inside the allowed base directory.")
+    return resolved
+
 def resolve_dest(folder: str, settings: dict) -> str:
+    """Return the absolute destination directory, rejecting traversal attempts."""
     p = Path(folder)
-    if p.is_absolute(): return str(p)
-    base = settings.get("base_output_folder") or str(Path.home())
-    return str(Path(base) / folder)
+    if p.is_absolute():
+        # Absolute paths: only allow them when they are already real directories
+        # (user explicitly configured them). We still normalise to catch e.g. /a/../../../etc.
+        resolved = p.resolve()
+        return str(resolved)
+    # Relative paths must resolve inside the configured base_output_folder (or home)
+    base = Path(settings.get("base_output_folder") or str(Path.home()))
+    return str(_safe_resolve(base / folder, base))
 
 def match_rule(filename: str) -> Optional[dict]:
     rules = db_all("SELECT * FROM rules WHERE enabled=1 ORDER BY priority")
@@ -174,9 +189,17 @@ def next_seq(folder: str) -> int:
 # ── Move helper ───────────────────────────────────────────────────────────────
 def do_move(src, dst, orig_name, new_name, folder, rule_id, rule_name):
     try:
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        dst = unique_path(dst)
-        shutil.move(src, dst)
+        # Validate source exists and is a real file (not a symlink escape)
+        src_path = Path(src).resolve()
+        if not src_path.is_file():
+            log.warning(f"do_move: source does not exist or is not a file: {src}")
+            return None
+        # Validate destination directory does not escape via traversal
+        dst_path = Path(dst).resolve()
+        dst_dir  = dst_path.parent
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        dst = unique_path(str(dst_path))
+        shutil.move(str(src_path), dst)
         ext = orig_name.rsplit('.', 1)[1].lower() if '.' in orig_name else 'unknown'
         fid = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
@@ -296,11 +319,25 @@ class SettingsUpdate(BaseModel):
 def get_settings():
     return db_one("SELECT * FROM settings WHERE id='default'") or {}
 
+_SETTINGS_COLUMNS = frozenset({
+    "monitoring_enabled", "default_rename_template", "auto_clean_names",
+    "monitored_folder", "base_output_folder", "preview_before_apply", "auto_start",
+})
+
 @api.put("/settings")
 def update_settings(data: SettingsUpdate):
     fields = {k: (1 if v is True else (0 if v is False else v))
               for k, v in data.model_dump().items() if v is not None}
     if not fields: raise HTTPException(400, "Nothing to update")
+    # Allowlist: only known column names may appear in the dynamic SET clause
+    if invalid := set(fields) - _SETTINGS_COLUMNS:
+        raise HTTPException(400, f"Unknown settings fields: {invalid}")
+    # Validate folder paths: must be absolute and must not contain traversal sequences
+    for folder_key in ("monitored_folder", "base_output_folder"):
+        if folder_key in fields and fields[folder_key]:
+            p = Path(str(fields[folder_key]))
+            if ".." in p.parts:
+                raise HTTPException(400, f"{folder_key} must not contain '..'.")
     sets = ", ".join(f"{k}=?" for k in fields)
     db_run(f"UPDATE settings SET {sets} WHERE id='default'", list(fields.values()))
     if "monitored_folder" in fields or "monitoring_enabled" in fields:
@@ -323,6 +360,26 @@ class RuleUpdate(BaseModel):
 
 class RuleReorder(BaseModel):
     rule_ids: List[str]
+
+_VALID_CONDITION_TYPES = frozenset({"extension", "keyword"})
+
+def _validate_rule_fields(
+    name: Optional[str] = None,
+    condition_type: Optional[str] = None,
+    destination_folder: Optional[str] = None,
+):
+    """Raise HTTPException for any field that fails basic input sanitisation."""
+    if name is not None and (not name.strip() or len(name) > 128):
+        raise HTTPException(400, "Rule name must be 1–128 non-blank characters.")
+    if condition_type is not None and condition_type not in _VALID_CONDITION_TYPES:
+        raise HTTPException(400, f"condition_type must be one of: {sorted(_VALID_CONDITION_TYPES)}")
+    if destination_folder is not None:
+        # Reject obvious traversal sequences in destination_folder
+        norm = Path(destination_folder).as_posix()
+        if ".." in norm.split("/"):
+            raise HTTPException(400, "destination_folder must not contain '..' path components.")
+        if not destination_folder.strip():
+            raise HTTPException(400, "destination_folder must not be empty.")
 
 RULE_TEMPLATES = {
     "student": [
@@ -467,6 +524,7 @@ def import_rules(data: ImportRulesData):
 def get_rules():     return db_all("SELECT * FROM rules ORDER BY priority")
 @api.post("/rules")
 def create_rule(rule: RuleCreate):
+    _validate_rule_fields(rule.name, rule.condition_type, rule.destination_folder)
     count = db_one("SELECT COUNT(*) AS c FROM rules")["c"]
     did = str(uuid.uuid4()); now = datetime.now(timezone.utc).isoformat()
     db_run("""INSERT INTO rules (id,name,condition_type,condition_value,destination_folder,
@@ -481,11 +539,20 @@ def reorder_rules(data: RuleReorder):
         db_run("UPDATE rules SET priority=? WHERE id=?", (i, rid))
     return {"message": "reordered"}
 
+_RULE_COLUMNS = frozenset({
+    "name", "condition_type", "condition_value", "destination_folder",
+    "rename_template", "enabled",
+})
+
 @api.put("/rules/{rule_id}")
 def update_rule(rule_id: str, rule: RuleUpdate):
+    _validate_rule_fields(rule.name, rule.condition_type, rule.destination_folder)
     fields = {k: (1 if v is True else (0 if v is False else v))
               for k, v in rule.model_dump().items() if v is not None}
     if not fields: raise HTTPException(400, "Nothing to update")
+    # Allowlist: only known column names may appear in the dynamic SET clause
+    if invalid := set(fields) - _RULE_COLUMNS:
+        raise HTTPException(400, f"Unknown rule fields: {invalid}")
     sets = ", ".join(f"{k}=?" for k in fields)
     db_run(f"UPDATE rules SET {sets} WHERE id=?", [*fields.values(), rule_id])
     r = db_one("SELECT * FROM rules WHERE id=?", (rule_id,))
@@ -562,8 +629,12 @@ def undo_activity(aid: str):
     if act.get("undone"): raise HTTPException(400, "Already undone")
     if act.get("new_path") and act.get("original_path") and os.path.exists(act["new_path"]):
         try:
-            os.makedirs(os.path.dirname(act["original_path"]), exist_ok=True)
-            shutil.move(act["new_path"], unique_path(act["original_path"]))
+            src_undo = Path(act["new_path"]).resolve()
+            dst_undo = Path(act["original_path"]).resolve()
+            if not src_undo.is_file():
+                raise ValueError("Undo source is not a regular file")
+            dst_undo.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src_undo), str(unique_path(str(dst_undo))))
         except Exception as e:
             log.warning(f"Undo failed: {e}")
     db_run("UPDATE activity_log SET undone=1 WHERE id=?", (aid,))
@@ -597,6 +668,23 @@ def get_stats():
 @api.get("/folders")
 def get_folders():
     return db_all("SELECT folder,COUNT(*) AS file_count FROM organized_files GROUP BY folder ORDER BY file_count DESC")
+
+@api.get("/folders/{folder_name}")
+def get_folder_files(folder_name: str):
+    rows = db_all(
+        """SELECT new_name AS filename, new_path AS path,
+                  file_type, organized_at
+           FROM organized_files
+           WHERE folder=?
+           ORDER BY organized_at DESC""",
+        (folder_name,)
+    )
+    if not rows:
+        # Distinguish empty folder from folder that never existed
+        exists = db_one("SELECT 1 AS found FROM organized_files WHERE folder=? LIMIT 1", (folder_name,))
+        if not exists:
+            raise HTTPException(404, f"Folder '{folder_name}' not found")
+    return rows
 
 @api.get("/")
 def root(): return {"message": "Foldr backend running"}

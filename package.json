@@ -1,6 +1,6 @@
 {
   "name": "foldr",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Set once. Forget forever. Local file organizer.",
   "main": "electron/main.js",
   "scripts": {
@@ -38,7 +38,10 @@
           ]
         }
       ],
-      "icon": "frontend/public/icon.ico"
+      "icon": "frontend/public/icon.ico",
+      "publisherName": "Foldr",
+      "requestedExecutionLevel": "asInvoker",
+      "artifactName": "Foldr-Setup-${version}.exe"
     },
     "nsis": {
       "oneClick": false,
