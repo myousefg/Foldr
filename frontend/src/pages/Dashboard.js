@@ -174,6 +174,24 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Pending banner — sticky, high-contrast, prominent */}
+      {pending.length > 0 && (
+        <button
+          onClick={() => setShowPending(true)}
+          className="w-full flex items-center justify-between border-2 border-amber-500 bg-amber-500 dark:bg-amber-500 rounded-lg px-5 py-4 hover:bg-amber-600 dark:hover:bg-amber-600 hover:border-amber-600 transition-colors sticky top-4 z-10 shadow-md"
+        >
+          <div className="flex items-center gap-3">
+            <Bell className="w-5 h-5 text-white animate-pulse" />
+            <span className="text-base font-semibold text-white">
+              {pending.length} file{pending.length !== 1 ? 's' : ''} waiting — Click to Review
+            </span>
+          </div>
+          <Badge className="bg-white/20 text-white border-white/30 hover:bg-white/30 text-xs font-semibold px-3 py-1">
+            REVIEW →
+          </Badge>
+        </button>
+      )}
+
       <Separator />
 
       {/* Stats */}
@@ -209,22 +227,6 @@ export default function Dashboard() {
           )}
         </div>
       </div>
-
-      {/* Pending banner */}
-      {pending.length > 0 && (
-        <button
-          onClick={() => setShowPending(true)}
-          className="w-full flex items-center justify-between border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 rounded-lg px-4 py-3 hover:bg-amber-100 dark:hover:bg-amber-950/50 transition-colors"
-        >
-          <div className="flex items-center gap-2.5">
-            <Bell className="w-4 h-4 text-amber-600 dark:text-amber-400" />
-            <span className="text-sm font-medium text-amber-800 dark:text-amber-300">
-              {pending.length} file{pending.length !== 1 ? 's' : ''} waiting for review
-            </span>
-          </div>
-          <Badge variant="outline" className="border-amber-400 text-amber-700 dark:text-amber-400 text-[10px]">REVIEW →</Badge>
-        </button>
-      )}
 
       {/* Bottom grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
