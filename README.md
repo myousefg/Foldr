@@ -6,8 +6,9 @@
 
 Foldr is a native desktop application that **automatically monitors a folder and organizes your files** using rules you define — by file type, keyword, or naming pattern. No cloud. No AI. Just automation that runs silently in the background.
 
-[![Platform](https://img.shields.io/badge/platform-Windows-blue?style=flat-square)](https://github.com)
-[![Stack](https://img.shields.io/badge/stack-Electron%20%2B%20React%20%2B%20Python-informational?style=flat-square)](https://github.com)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue?style=flat-square)](https://github.com/myousefg/Foldr/releases/tag/v1.1.0)
+[![Platform](https://img.shields.io/badge/platform-Windows-blue?style=flat-square)](https://github.com/myousefg/Foldr/releases)
+[![Stack](https://img.shields.io/badge/stack-Electron%20%2B%20React%20%2B%20Python-informational?style=flat-square)](https://github.com/myousefg/Foldr)
 [![License](https://img.shields.io/badge/license-Proprietary-red?style=flat-square)](LICENSE)
 
 </div>
@@ -84,15 +85,16 @@ npm start
 scripts\build-exe.bat
 ```
 
-Runs three steps automatically:
+Runs four steps automatically:
 
 ```
-1. PyInstaller  →  backend/dist/foldr-backend.exe
-2. craco build  →  frontend/build/
-3. electron-builder  →  dist/Foldr Setup 1.0.0.exe
+1. PyInstaller     →  backend/dist/foldr-backend.exe
+2. yarn install    →  frontend/node_modules/
+3. craco build     →  frontend/build/
+4. electron-builder  →  dist/Foldr-Setup-1.1.0.exe + dist/checksum.txt
 ```
 
-> **Tip:** Run from a clean terminal after `scripts\dev.bat` has completed at least once.
+> **Tip:** You can run this right after `scripts\clean.bat` — the script reinstalls frontend dependencies automatically.
 
 ---
 
@@ -124,15 +126,26 @@ If **Preview before moving** is enabled in Settings, an amber banner appears on 
 
 ## 🔤 Rename Tokens
 
-| Token                    | Example output  | Description                                               |
-| ------------------------ | --------------- | --------------------------------------------------------- |
-| `{date}`                 | `2026-04-09`    | Today's date                                              |
-| `{originalname_cleaned}` | `invoice-draft` | Auto-cleaned filename (strips camera codes, copy markers) |
-| `{originalname}`         | `invoice_draft` | Raw filename without extension                            |
-| `{sequence}`             | `001`, `002`    | Auto-incrementing number per destination folder           |
-| `{category}`             | `documents`     | Destination folder name, lowercased                       |
+| Token                    | Example output  | Description                                                      |
+| ------------------------ | --------------- | ---------------------------------------------------------------- |
+| `{date}`                 | `2026-04-09`    | Today's date                                                     |
+| `{originalname_cleaned}` | `invoice-draft` | Filename with camera codes, copy markers, and spacing cleaned up |
+| `{originalname}`         | `invoice_draft` | Raw filename without extension — never modified                  |
+| `{sequence}`             | `001`, `002`    | Auto-incrementing number per destination folder                  |
+| `{category}`             | `documents`     | Destination folder name, lowercased                              |
 
-**Auto-clean** strips: `IMG_XXXX` / `DSC_XXXX` / `VID_XXXX` · ` (1)` ` (2)` · `- Copy` / `Copy of` · special characters.
+**Token vs. Auto-clean setting behaviour:**
+
+| Rule template                   | Auto-clean ON                | Auto-clean OFF                |
+| ------------------------------- | ---------------------------- | ----------------------------- |
+| _(empty)_                       | Cleaned, no date prefix      | Raw, no date prefix           |
+| `{date}_{originalname_cleaned}` | Cleaned + date               | Cleaned + date _(token wins)_ |
+| `{date}_{originalname}`         | Raw + date                   | Raw + date                    |
+| _(not set on rule)_             | Uses global default, cleaned | Uses global default, raw      |
+
+> `{originalname_cleaned}` **always cleans** when written explicitly in a template — the Auto-clean toggle only affects the fallback when the rename template is left empty.
+
+**Auto-clean strips:** `IMG_XXXX` / `DSC_XXXX` / `VID_XXXX` · ` (1)` ` (2)` · `- Copy` / `Copy of` · extra spaces and special characters.
 
 **Example:**
 
@@ -154,7 +167,7 @@ All settings are available under **Settings** in the app:
 | Base Output Folder      | Root for relative destination paths (default: home directory) |
 | Preview before moving   | Queue files for review instead of moving immediately          |
 | Monitoring enabled      | Pause/resume without losing rules                             |
-| Auto-clean filenames    | Strip camera codes and copy markers automatically             |
+| Auto-clean filenames    | Strip camera codes and copy markers when no template is set   |
 | Default rename template | Fallback template when a rule has no template of its own      |
 | Theme                   | Light / Dark / System                                         |
 
@@ -164,7 +177,7 @@ All settings are available under **Settings** in the app:
 
 All app data is stored in a single SQLite file:
 
-- **Windows:** `...(your user)\.foldr\foldr.db`
+- **Windows:** `%APPDATA%\.foldr\foldr.db`
 
 | What you want to reset                                       | How                                                                                                           |
 | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
@@ -244,13 +257,37 @@ Removes all generated folders (`node_modules`, `build`, `dist`, etc.). Then zip 
 
 ---
 
+## 📋 Changelog
+
+### v1.1.0 — Sprint 1 Stability Update
+
+- Fixed: multiple files queued simultaneously now all move correctly
+- Fixed: preview cards for deleted files auto-dismiss instead of persisting
+- Fixed: auto-clean filenames toggle now works correctly (ON/OFF respected)
+- Fixed: empty rename template no longer applies the global date prefix
+- Fixed: undo no longer causes an infinite move loop when preview is active
+- Fixed: undo restores files to their exact original absolute path
+- Fixed: undo button disabled with tooltip when files are pending review
+- Fixed: race condition — concurrent file moves can no longer overwrite each other
+- Fixed: `GET /api/folders/{name}` endpoint missing (404 error in Dashboard)
+- Fixed: dashboard polling requests no longer accumulate in the background
+- Security: path traversal protection on all file operations and rule inputs
+- Security: SQL injection protection via column allowlists and parameterized queries
+- Build: SHA-256 checksum generated correctly alongside installer
+
+### v1.0 — Initial Release
+
+- Real-time folder monitoring, rule engine, auto-rename, preview, undo, presets
+
+---
+
 ## 👥 Contributors
 
-| Name                     | Role    |
-| ------------------------ | ------- |
-| Mohammed Yousef Gumilar  | Hacker  |
-| Joshua Daniel Simanjunak | Hustler |
-| Muhammad Ghiyats Fatiha  | Hipster |
+| Name                      | Role    |
+| ------------------------- | ------- |
+| Mohammed Yousef Gumilar   | Hacker  |
+| Joshua Daniel Simanjuntak | Hustler |
+| Muhammad Ghiyats Fatiha   | Hipster |
 
 ---
 
