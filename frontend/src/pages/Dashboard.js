@@ -20,7 +20,7 @@ export default function Dashboard() {
   const [loading, setLoading]     = useState(false);
   const lastActivityId             = useRef(null);
   const abortRef                   = useRef(null);
-  const seenPendingIds             = useRef(new Set()); // IDs already shown to user — never re-auto-select
+  const seenPendingIds             = useRef(new Set());
 
   const fetchAll = useCallback(async () => {
     // Cancel any in-flight request from the previous interval tick
@@ -44,33 +44,15 @@ export default function Dashboard() {
       setSettings(cfg);
       setPending(pend);
 
-      // ── Selection hygiene ─────────────────────────────────────────────
-      // NEVER call setSelected(new Set(pend.map(p => p.id))) here.
-      // That resets the user's manual deselections every 4 s (the bug).
-      //
-      // Instead:
-      //  1. Remove IDs that are no longer pending (applied/skipped elsewhere)
-      //  2. Auto-select only brand-new items (IDs we have never seen before)
-      //  3. Leave everything else exactly as the user left it
       setSelected(prev => {
         const pendingIds = new Set(pend.map(p => p.id));
-
-        // Step 1 — prune stale selections
         const next = new Set([...prev].filter(id => pendingIds.has(id)));
-
-        // Step 2 — auto-select genuinely new arrivals
         pend.forEach(p => {
-          if (!seenPendingIds.current.has(p.id)) {
-            next.add(p.id);
-          }
+          if (!seenPendingIds.current.has(p.id)) next.add(p.id);
         });
-
-        // Step 3 — mark everything currently pending as "seen"
         pend.forEach(p => seenPendingIds.current.add(p.id));
-
         return next;
       });
-      // ─────────────────────────────────────────────────────────────────
 
       // Update tray badge
       if (isElectron) window.electronAPI.setTrayBadge(pend.length);
@@ -174,24 +156,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Pending banner — sticky, high-contrast, prominent */}
-      {pending.length > 0 && (
-        <button
-          onClick={() => setShowPending(true)}
-          className="w-full flex items-center justify-between border-2 border-amber-500 bg-amber-500 dark:bg-amber-500 rounded-lg px-5 py-4 hover:bg-amber-600 dark:hover:bg-amber-600 hover:border-amber-600 transition-colors sticky top-4 z-10 shadow-md"
-        >
-          <div className="flex items-center gap-3">
-            <Bell className="w-5 h-5 text-white animate-pulse" />
-            <span className="text-base font-semibold text-white">
-              {pending.length} file{pending.length !== 1 ? 's' : ''} waiting — Click to Review
-            </span>
-          </div>
-          <Badge className="bg-white/20 text-white border-white/30 hover:bg-white/30 text-xs font-semibold px-3 py-1">
-            REVIEW →
-          </Badge>
-        </button>
-      )}
-
       <Separator />
 
       {/* Stats */}
@@ -227,6 +191,22 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      {/* Pending banner */}
+      {pending.length > 0 && (
+        <button
+          onClick={() => setShowPending(true)}
+          className="w-full flex items-center justify-between border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 rounded-lg px-4 py-3 hover:bg-amber-100 dark:hover:bg-amber-950/50 transition-colors"
+        >
+          <div className="flex items-center gap-2.5">
+            <Bell className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+            <span className="text-sm font-medium text-amber-800 dark:text-amber-300">
+              {pending.length} file{pending.length !== 1 ? 's' : ''} waiting for review
+            </span>
+          </div>
+          <Badge variant="outline" className="border-amber-400 text-amber-700 dark:text-amber-400 text-[10px]">REVIEW →</Badge>
+        </button>
+      )}
 
       {/* Bottom grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
