@@ -127,12 +127,6 @@ def apply_template(template: str, filename: str, seq: int, category: str, auto_c
     name = parts[0]; ext = ('.' + parts[1]) if len(parts) > 1 else ''
     now = datetime.now()
 
-    # Option B contract:
-    #   {originalname_cleaned} → ALWAYS cleans, regardless of auto_clean setting.
-    #     The token name is the explicit instruction. If you typed it, you want it.
-    #   {originalname}         → ALWAYS raw, regardless of auto_clean setting.
-    #   auto_clean only decides which fallback template resolve_tmpl picks when
-    #     the rule's rename_template field is left empty (see _process / preview_org).
     r = template
     r = r.replace("{date}", now.strftime("%Y-%m-%d"))
     r = r.replace("{YYYY-MM-DD}", now.strftime("%Y-%m-%d"))
@@ -168,11 +162,8 @@ def resolve_dest(folder: str, settings: dict) -> str:
     """Return the absolute destination directory, rejecting traversal attempts."""
     p = Path(folder)
     if p.is_absolute():
-        # Absolute paths: only allow them when they are already real directories
-        # (user explicitly configured them). We still normalise to catch e.g. /a/../../../etc.
         resolved = p.resolve()
         return str(resolved)
-    # Relative paths must resolve inside the configured base_output_folder (or home)
     base = Path(settings.get("base_output_folder") or str(Path.home()))
     return str(_safe_resolve(base / folder, base))
 
@@ -198,25 +189,14 @@ _MOVE_MAX_RETRIES = 3
 _MOVE_RETRY_DELAY = 0.1  # seconds
 
 def do_move(src, dst, orig_name, new_name, folder, rule_id, rule_name):
-    # Validate source exists and is a real file (not a symlink escape)
     src_path = Path(src).resolve()
     if not src_path.is_file():
         log.warning(f"do_move: source does not exist or is not a file: {src}")
         return None
 
-    # Validate destination directory does not escape via traversal
     dst_path = Path(dst).resolve()
     dst_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # ── Atomic unique_path + shutil.move under _move_lock ────────────────────
-    # The lock serialises all do_move calls so two threads can never receive
-    # the same free path from unique_path() and race to shutil.move() it.
-    #
-    # Retry loop handles the residual TOCTOU window where a process outside
-    # Foldr creates the file between our os.path.exists check and the move.
-    # Each retry re-runs unique_path() inside the lock to get a fresh free
-    # path — we never blindly overwrite on retry.
-    # ─────────────────────────────────────────────────────────────────────────
     final_dst = None
     last_err  = None
 
@@ -243,9 +223,6 @@ def do_move(src, dst, orig_name, new_name, folder, rule_id, rule_name):
     fid = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
-    # Store src_path (resolved absolute path), NOT the raw `src` string.
-    # If src was a relative path or contained symlinks, storing `src` would
-    # make undo_activity restore to the wrong location.
     abs_src = str(src_path)
 
     try:
@@ -260,7 +237,6 @@ def do_move(src, dst, orig_name, new_name, folder, rule_id, rule_name):
             (str(uuid.uuid4()), orig_name, abs_src, new_name, final_dst, folder,
              rule_name, rule_id, now, ext, fid))
     except Exception as db_err:
-        # File was moved successfully — don't undo. Log the discrepancy.
         log.error(f"DB log failed after successful move {abs_src} → {final_dst}: {db_err}")
 
     log.info(f"Moved: {orig_name} -> {final_dst}")
@@ -277,7 +253,6 @@ class FoldrHandler(FileSystemEventHandler):
 
     def _handle(self, path):
         if not os.path.isfile(path): return
-        # Dedup: skip if this path is already queued or being processed
         with _pending_lock:
             if path in _pending_paths:
                 return
@@ -285,12 +260,10 @@ class FoldrHandler(FileSystemEventHandler):
         try:
             self._process(path)
         finally:
-            # Release after a short delay so rapid duplicate events are ignored
             threading.Timer(3.0, lambda: _pending_paths.discard(path)).start()
 
     def _process(self, path):
         if not os.path.isfile(path): return
-        # Also skip if already in pending_files table (survived a restart)
         existing = db_one("SELECT id FROM pending_files WHERE original_path=?", (path,))
         if existing: return
         settings = db_one("SELECT * FROM settings WHERE id='default'") or {}
@@ -300,32 +273,17 @@ class FoldrHandler(FileSystemEventHandler):
         if not rule: return
         dest_dir = resolve_dest(rule["destination_folder"], settings)
         seq = next_seq(rule["destination_folder"])
-        # ── Template resolution ───────────────────────────────────────────
-        # Option B contract:
-        #   {originalname_cleaned} in an EXPLICIT rule template → always cleans.
-        #   auto_clean flag only controls two things:
-        #     1. Empty rule template fallback: ON→{originalname_cleaned}, OFF→{originalname}
-        #     2. Global default fallback: OFF swaps {originalname_cleaned}→{originalname}
-        #        so the global default also respects the setting when no rule overrides it.
         rule_tmpl = rule.get("rename_template")
         if rule_tmpl is None:
-            # No rule template — use global default, but honour auto_clean by
-            # swapping the token so the user's global preference is respected.
             tmpl = settings.get("default_rename_template", "{date}_{originalname_cleaned}")
             if not auto_clean:
                 tmpl = tmpl.replace("{originalname_cleaned}", "{originalname}") \
                            .replace("{cleaned_name}", "{originalname}")
         elif rule_tmpl == "":
-            # Empty = no rename. auto_clean decides whether to clean the name.
             tmpl = "{originalname_cleaned}" if auto_clean else "{originalname}"
         else:
-            # Explicit rule template — rendered exactly as written.
-            # {originalname_cleaned} always cleans; auto_clean is irrelevant here.
             tmpl = rule_tmpl
-        # ─────────────────────────────────────────────────────────────────
 
-        # Read auto_clean_names flag (default ON).
-        # This was the root cause: flag was saved to DB but never read here.
         auto_clean = bool(settings.get("auto_clean_names", 1))
 
         new_name = apply_template(tmpl, filename, seq, rule["destination_folder"], auto_clean=auto_clean)
@@ -345,9 +303,9 @@ class FoldrHandler(FileSystemEventHandler):
 
 _observer: Optional[Observer] = None
 _obs_lock = threading.Lock()
-_pending_paths: set = set()   # dedup: paths currently being processed
+_pending_paths: set = set()
 _pending_lock = threading.Lock()
-_move_lock = threading.Lock()  # ensures unique_path + shutil.move are atomic
+_move_lock = threading.Lock()
 
 def start_watcher(folder):
     global _observer
@@ -404,10 +362,8 @@ def update_settings(data: SettingsUpdate):
     fields = {k: (1 if v is True else (0 if v is False else v))
               for k, v in data.model_dump().items() if v is not None}
     if not fields: raise HTTPException(400, "Nothing to update")
-    # Allowlist: only known column names may appear in the dynamic SET clause
     if invalid := set(fields) - _SETTINGS_COLUMNS:
         raise HTTPException(400, f"Unknown settings fields: {invalid}")
-    # Validate folder paths: must be absolute and must not contain traversal sequences
     for folder_key in ("monitored_folder", "base_output_folder"):
         if folder_key in fields and fields[folder_key]:
             p = Path(str(fields[folder_key]))
@@ -449,7 +405,6 @@ def _validate_rule_fields(
     if condition_type is not None and condition_type not in _VALID_CONDITION_TYPES:
         raise HTTPException(400, f"condition_type must be one of: {sorted(_VALID_CONDITION_TYPES)}")
     if destination_folder is not None:
-        # Reject obvious traversal sequences in destination_folder
         norm = Path(destination_folder).as_posix()
         if ".." in norm.split("/"):
             raise HTTPException(400, "destination_folder must not contain '..' path components.")
@@ -506,11 +461,10 @@ RULE_TEMPLATES = {
     ],
 }
 
-# Normalised dedup key
 def _cv_key(ctype: str, cval: str) -> tuple:
     return (ctype.lower(), cval.lower().strip().lstrip("."))
 
-# Lock prevents concurrent preset calls (rapid double-clicks)
+
 _preset_lock = threading.Lock()
 
 @api.get("/rules/templates")
@@ -523,7 +477,6 @@ def apply_template_route(ttype: str):
     if not _preset_lock.acquire(blocking=False):
         raise HTTPException(409, "Already applying a preset — please wait.")
     try:
-        # Snapshot all existing keys in ONE query to prevent any duplication
         existing_rules = db_all("SELECT condition_type, condition_value FROM rules")
         existing_keys = {_cv_key(r["condition_type"], r["condition_value"]) for r in existing_rules}
         count = db_one("SELECT COUNT(*) AS c FROM rules")["c"]
@@ -625,7 +578,6 @@ def update_rule(rule_id: str, rule: RuleUpdate):
     fields = {k: (1 if v is True else (0 if v is False else v))
               for k, v in rule.model_dump().items() if v is not None}
     if not fields: raise HTTPException(400, "Nothing to update")
-    # Allowlist: only known column names may appear in the dynamic SET clause
     if invalid := set(fields) - _RULE_COLUMNS:
         raise HTTPException(400, f"Unknown rule fields: {invalid}")
     sets = ", ".join(f"{k}=?" for k in fields)
@@ -645,8 +597,6 @@ class ApplyPending(BaseModel):
 @api.get("/pending")
 def get_pending():
     rows = db_all("SELECT * FROM pending_files ORDER BY detected_at DESC")
-    # Auto-clean stale records: original file was deleted before user reviewed it.
-    # This ensures the frontend never shows a preview card for a file that is gone.
     stale_ids = [r["id"] for r in rows if not Path(r["original_path"]).is_file()]
     for sid in stale_ids:
         db_run("DELETE FROM pending_files WHERE id=?", (sid,))
@@ -664,25 +614,17 @@ def apply_pending(data: ApplyPending):
         if not row:
             continue  # already processed or skipped
 
-        # ── Stale-file guard ──────────────────────────────────────────────
-        # If the source file no longer exists (user deleted it manually, or a
-        # previous apply already moved it), remove the pending record and skip.
-        # do_move() also checks this internally, but doing it here gives us an
-        # explicit stale count and avoids unnecessary rule/path lookups.
         if not Path(row["original_path"]).is_file():
             db_run("DELETE FROM pending_files WHERE id=?", (pid,))
             log.info(f"apply_pending: stale record removed (file gone): {row['original_path']}")
             stale += 1
             continue
-        # ─────────────────────────────────────────────────────────────────
 
         rule = db_one("SELECT * FROM rules WHERE id=?", (row["rule_id"],))
         if not rule:
             db_run("DELETE FROM pending_files WHERE id=?", (pid,))
             continue
 
-        # Pass proposed_path directly — do_move calls unique_path() under
-        # _move_lock, so there is no double-unique_path race here.
         result = do_move(
             row["original_path"],
             row["proposed_path"],
@@ -748,18 +690,12 @@ def undo_activity(aid: str):
     if not act: raise HTTPException(404, "Not found")
     if act.get("undone"): raise HTTPException(400, "Already undone")
 
-    # ── Pending-items guard ──────────────────────────────────────────────────
-    # If there are files waiting in the preview queue, block undo.
-    # Undoing while preview is active would move the file back into the
-    # monitored folder, triggering watchdog to re-queue it — causing an
-    # infinite move → undo → move loop.
     pending_count = db_one("SELECT COUNT(*) AS c FROM pending_files")["c"]
     if pending_count > 0:
         raise HTTPException(
             409,
             "Please review the pending files first before using Undo."
         )
-    # ─────────────────────────────────────────────────────────────────────────
 
     if act.get("new_path") and act.get("original_path") and os.path.exists(act["new_path"]):
         src_undo  = Path(act["new_path"]).resolve()
@@ -775,18 +711,11 @@ def undo_activity(aid: str):
 
         try:
             with _move_lock:
-                # unique_path() ensures we never overwrite if original slot is
-                # already taken (e.g. user created a new file at that location).
-                # AC: "jika original_path sudah ditempati, gunakan unique_path()"
                 final_dst = unique_path(str(dst_undo))
 
                 if final_dst != str(dst_undo):
-                    log.info(f"Undo [{aid}]: original slot occupied — "
-                             f"restoring to {final_dst} instead of {dst_undo}")
+                    log.info(f"Undo [{aid}]: restoring to {final_dst} (original slot occupied)")
 
-                # ── Loop prevention ──────────────────────────────────────────
-                # Register both paths in _pending_paths before the move so the
-                # watchdog skips the event and doesn't re-queue the file.
                 with _pending_lock:
                     _pending_paths.add(final_dst)
                     _pending_paths.add(str(dst_undo))
@@ -794,7 +723,6 @@ def undo_activity(aid: str):
                     for p in paths:
                         _pending_paths.discard(p)
                 threading.Timer(10.0, _release, args=[[final_dst, str(dst_undo)]]).start()
-                # ────────────────────────────────────────────────────────────
 
                 shutil.move(str(src_undo), final_dst)
 
@@ -847,7 +775,6 @@ def get_folder_files(folder_name: str):
         (folder_name,)
     )
     if not rows:
-        # Distinguish empty folder from folder that never existed
         exists = db_one("SELECT 1 AS found FROM organized_files WHERE folder=? LIMIT 1", (folder_name,))
         if not exists:
             raise HTTPException(404, f"Folder '{folder_name}' not found")
