@@ -16,7 +16,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from watchdog.events import FileSystemEventHandler
-from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(os.environ.get("FOLDR_DATA", Path.home() / ".foldr"))
@@ -445,7 +445,7 @@ def start_watcher(folder):
         if _observer:
             _observer.stop(); _observer.join()
         if not folder or not os.path.isdir(folder): return
-        _observer = Observer()
+        _observer = PollingObserver(timeout=2)  # 2-second poll interval — reduces CPU at idle
         _observer.schedule(FoldrHandler(), folder, recursive=False)
         _observer.start()
         log.info(f"Watching: {folder}")
