@@ -680,6 +680,33 @@ def preview_org(data: OrganizeRequest):
                         "rule_name": "No matching rule", "rule_id": None, "matched": False})
     return out
 
+# ── Template preview (used by RulesManager dialog) ────────────────────────────
+class TemplatePreviewRequest(BaseModel):
+    filename: str
+    rename_template: str
+    destination_folder: str = "Documents"
+
+@api.post("/organize/template-preview")
+def preview_template(data: TemplatePreviewRequest):
+    """Apply a rename template to a sample filename without needing a saved rule.
+    Used by the frontend RulesManager dialog to show a live, accurate preview."""
+    settings = db_one("SELECT * FROM settings WHERE id='default'") or {}
+    auto_clean = bool(settings.get("auto_clean_names", 1))
+
+    tmpl = data.rename_template
+    if not tmpl:
+        tmpl = "{originalname_cleaned}" if auto_clean else "{originalname}"
+
+    seq = next_seq(data.destination_folder)
+    new_name = apply_template(tmpl, data.filename, seq, data.destination_folder, auto_clean=auto_clean)
+    dest = resolve_dest(data.destination_folder, settings)
+
+    return {
+        "original_name": data.filename,
+        "new_name": new_name,
+        "destination_folder": dest,
+    }
+
 @api.get("/activity")
 def get_activity(limit: int = Query(50, ge=1, le=500)):
     return db_all("SELECT * FROM activity_log ORDER BY timestamp DESC LIMIT ?", (limit,))
@@ -742,11 +769,19 @@ def clear_activity():
     db_run("DELETE FROM activity_log"); return {"message": "cleared"}
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
+def _safe_full_path(folder: str, settings: dict) -> Optional[str]:
+    """Resolve a folder name to its absolute path, returning None on any error."""
+    try:
+        return resolve_dest(folder, settings)
+    except Exception:
+        return None
+
 @api.get("/stats")
 def get_stats():
     now = datetime.now(timezone.utc)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     week  = (now - timedelta(days=7)).isoformat()
+    settings = db_one("SELECT * FROM settings WHERE id='default'") or {}
     return {
         "total_files":    db_one("SELECT COUNT(*) AS c FROM organized_files")["c"],
         "files_today":    db_one("SELECT COUNT(*) AS c FROM organized_files WHERE organized_at>=?", (today,))["c"],
@@ -755,14 +790,20 @@ def get_stats():
         "total_rules":    db_one("SELECT COUNT(*) AS c FROM rules")["c"],
         "pending_count":  db_one("SELECT COUNT(*) AS c FROM pending_files")["c"],
         "type_breakdown": db_all("SELECT file_type AS type,COUNT(*) AS count FROM organized_files GROUP BY file_type ORDER BY count DESC LIMIT 10"),
-        "folder_breakdown": [{"folder": r["folder"], "count": r["count"]} for r in
-                             db_all("SELECT folder,COUNT(*) AS count FROM organized_files GROUP BY folder ORDER BY count DESC LIMIT 10")],
+        "folder_breakdown": [{
+            "folder": r["folder"],
+            "count":  r["count"],
+            "full_path": _safe_full_path(r["folder"], settings),
+        } for r in db_all("SELECT folder,COUNT(*) AS count FROM organized_files GROUP BY folder ORDER BY count DESC LIMIT 10")],
         "recent_activity": db_all("SELECT * FROM activity_log WHERE undone=0 ORDER BY timestamp DESC LIMIT 5"),
     }
 
 @api.get("/folders")
 def get_folders():
-    return db_all("SELECT folder,COUNT(*) AS file_count FROM organized_files GROUP BY folder ORDER BY file_count DESC")
+    settings = db_one("SELECT * FROM settings WHERE id='default'") or {}
+    rows = db_all("SELECT folder,COUNT(*) AS file_count FROM organized_files GROUP BY folder ORDER BY file_count DESC")
+    return [{"folder": r["folder"], "file_count": r["file_count"],
+             "full_path": _safe_full_path(r["folder"], settings)} for r in rows]
 
 @api.get("/folders/{folder_name}")
 def get_folder_files(folder_name: str):
