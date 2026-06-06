@@ -18,6 +18,8 @@ export const rulesApi = {
 
 export const organizeApi = {
   preview: (filenames) => api.post('/organize/preview', { filenames }).then(r => r.data),
+  templatePreview: (filename, rename_template, destination_folder) =>
+    api.post('/organize/template-preview', { filename, rename_template, destination_folder }).then(r => r.data),
 };
 
 export const pendingApi = {

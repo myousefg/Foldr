@@ -680,6 +680,33 @@ def preview_org(data: OrganizeRequest):
                         "rule_name": "No matching rule", "rule_id": None, "matched": False})
     return out
 
+# ── Template preview (used by RulesManager dialog) ────────────────────────────
+class TemplatePreviewRequest(BaseModel):
+    filename: str
+    rename_template: str
+    destination_folder: str = "Documents"
+
+@api.post("/organize/template-preview")
+def preview_template(data: TemplatePreviewRequest):
+    """Apply a rename template to a sample filename without needing a saved rule.
+    Used by the frontend RulesManager dialog to show a live, accurate preview."""
+    settings = db_one("SELECT * FROM settings WHERE id='default'") or {}
+    auto_clean = bool(settings.get("auto_clean_names", 1))
+
+    tmpl = data.rename_template
+    if not tmpl:
+        tmpl = "{originalname_cleaned}" if auto_clean else "{originalname}"
+
+    seq = next_seq(data.destination_folder)
+    new_name = apply_template(tmpl, data.filename, seq, data.destination_folder, auto_clean=auto_clean)
+    dest = resolve_dest(data.destination_folder, settings)
+
+    return {
+        "original_name": data.filename,
+        "new_name": new_name,
+        "destination_folder": dest,
+    }
+
 @api.get("/activity")
 def get_activity(limit: int = Query(50, ge=1, le=500)):
     return db_all("SELECT * FROM activity_log ORDER BY timestamp DESC LIMIT ?", (limit,))
