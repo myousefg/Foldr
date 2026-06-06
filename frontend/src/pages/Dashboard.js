@@ -243,22 +243,12 @@ export default function Dashboard() {
             {stats?.folder_breakdown?.length > 0 ? (
               <div className="space-y-2">
                 {stats.folder_breakdown.map(f => (
-                  <div key={f.folder} className="flex items-center justify-between text-xs group">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <FolderOpen className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                      <span className="font-mono truncate">{f.folder}</span>
+                  <div key={f.folder} className="flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2">
+                      <FolderOpen className="w-3.5 h-3.5 text-muted-foreground" />
+                      <span className="font-mono">{f.folder}</span>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0 ml-2">
-                      <span className="text-muted-foreground font-mono">{f.count}</span>
-                      <button
-                        onClick={() => openFolder(f.full_path)}
-                        disabled={!isElectron || !f.full_path}
-                        title={f.full_path ? `Open in Explorer: ${f.full_path}` : 'Path unavailable'}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground disabled:opacity-20 disabled:cursor-not-allowed p-0.5 rounded"
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                      </button>
-                    </div>
+                    <span className="text-muted-foreground font-mono">{f.count}</span>
                   </div>
                 ))}
               </div>

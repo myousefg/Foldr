@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { rulesApi, organizeApi } from '@/lib/api';
+import { rulesApi } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
@@ -35,10 +35,8 @@ export default function RulesManager() {
   const [form, setForm]               = useState(defaultForm);
   const [saving, setSaving]           = useState(false);
   const [preview, setPreview]         = useState('');
-  const [previewLoading, setPreviewLoading] = useState(false);
   const [applyingPreset, setApplyingPreset] = useState(null);
   const importRef                     = useRef(null);
-  const previewAbort                  = useRef(null);
 
   const fetchRules = useCallback(async () => {
     try { setRules(await rulesApi.getAll()); } catch { console.error('rules fetch failed'); }
@@ -46,53 +44,25 @@ export default function RulesManager() {
 
   useEffect(() => { fetchRules(); }, [fetchRules]);
 
-  // Live rename preview — calls backend /api/organize/preview to guarantee
-  // 100% match with the real apply_template() + clean_filename() logic (Option 1).
+  // Live rename preview
   useEffect(() => {
-    if (!form.rename_template) { setPreview(''); setPreviewLoading(false); return; }
-
-    // Build a representative sample filename that exercises the condition
-    const sampleFilename = form.condition_type === 'extension'
+    if (!form.rename_template) { setPreview(''); return; }
+    const sample = form.condition_type === 'extension'
       ? `IMG_9283 (1)${form.condition_value || '.pdf'}`
       : `${form.condition_value || 'invoice'}_draft.pdf`;
-
-    // Cancel any in-flight request before firing a new one
-    if (previewAbort.current) previewAbort.current.abort();
-    const controller = new AbortController();
-    previewAbort.current = controller;
-
-    setPreviewLoading(true);
-
-    organizeApi.templatePreview(sampleFilename, form.rename_template, form.destination_folder || 'Documents')
-      .then(r => {
-        if (controller.signal.aborted) return;
-        if (r) {
-          setPreview(`${r.original_name}  →  ${r.destination_folder}\\${r.new_name}`);
-        } else {
-          setPreview('');
-        }
-      })
-      .catch(err => {
-        if (err?.name === 'CanceledError' || err?.name === 'AbortError' || controller.signal.aborted) return;
-        // Graceful fallback when backend is unreachable — approximate preview only
-        const dest = form.destination_folder || 'Documents';
-        const date = new Date().toISOString().slice(0, 10);
-        const nameNoExt = sampleFilename.includes('.') ? sampleFilename.slice(0, sampleFilename.lastIndexOf('.')) : sampleFilename;
-        const ext       = sampleFilename.includes('.') ? sampleFilename.slice(sampleFilename.lastIndexOf('.')) : '';
-        let result = form.rename_template
-          .replace('{date}', date).replace('{YYYY-MM-DD}', date)
-          .replace('{YYYY}', date.slice(0,4)).replace('{MM}', date.slice(5,7)).replace('{DD}', date.slice(8,10))
-          .replace('{originalname}', nameNoExt)
-          .replace('{originalname_cleaned}', nameNoExt.toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9\-]/g,'') || 'file')
-          .replace('{cleaned_name}',         nameNoExt.toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9\-]/g,'') || 'file')
-          .replace('{sequence}', '001')
-          .replace('{category}', dest.toLowerCase().replace(/\s+/g,'-'));
-        result = result.replace(/[-_]{2,}/g,'_').replace(/^[-_]+|[-_]+$/g,'') + ext;
-        setPreview(`${sampleFilename}  →  ${dest}\\${result} ⚠ backend offline`);
-      })
-      .finally(() => { if (!controller.signal.aborted) setPreviewLoading(false); });
-
-    return () => controller.abort();
+    const dest = form.destination_folder || 'Documents';
+    const date = new Date().toISOString().slice(0, 10);
+    let cleaned = sample.replace(/\s*\(\d+\)\s*/g,'').replace(/^(IMG|DSC|VID)[-_]?\d+[-_]?/i,'')
+      .replace(/_/g,' ').trim().toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9\-]/g,'').replace(/^\./, '') || 'file';
+    const nameNoExt = sample.includes('.') ? sample.slice(0, sample.lastIndexOf('.')) : sample;
+    const ext       = sample.includes('.') ? sample.slice(sample.lastIndexOf('.')) : '';
+    let result = form.rename_template
+      .replace('{date}', date).replace('{YYYY-MM-DD}', date)
+      .replace('{originalname}', nameNoExt).replace('{originalname_cleaned}', cleaned)
+      .replace('{cleaned_name}', cleaned).replace('{sequence}', '001')
+      .replace('{category}', dest.toLowerCase().replace(/\s+/g,'-'));
+    result = result.replace(/[-_]{2,}/g,'_').replace(/^[-_]+|[-_]+$/g,'') + ext;
+    setPreview(`${sample}  →  ${dest}\\${result}`);
   }, [form.rename_template, form.condition_type, form.condition_value, form.destination_folder]);
 
   const openAdd  = () => { setEditingRule(null); setForm(defaultForm); setShowDialog(true); };
@@ -354,21 +324,10 @@ export default function RulesManager() {
                   <code className="bg-muted px-1 rounded">{'{sequence}'}</code>
                 </p>
               </Field>
-              {(previewLoading || preview) && (
-                <div className={`rounded-lg px-4 py-3 border ${
-                  preview?.includes('⚠ backend offline')
-                    ? 'bg-yellow-50 dark:bg-yellow-950/30 border-yellow-200 dark:border-yellow-800'
-                    : 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800'
-                }`}>
-                  <p className={`text-[10px] font-semibold tracking-widest uppercase mb-1 ${
-                    preview?.includes('⚠ backend offline')
-                      ? 'text-yellow-700 dark:text-yellow-400'
-                      : 'text-emerald-700 dark:text-emerald-400'
-                  }`}>Preview</p>
-                  {previewLoading
-                    ? <p className="font-mono text-xs text-muted-foreground animate-pulse">Computing…</p>
-                    : <p className="font-mono text-xs text-emerald-800 dark:text-emerald-300 break-all">{preview}</p>
-                  }
+              {preview && (
+                <div className="bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-lg px-4 py-3">
+                  <p className="text-[10px] font-semibold tracking-widest uppercase text-emerald-700 dark:text-emerald-400 mb-1">Preview</p>
+                  <p className="font-mono text-xs text-emerald-800 dark:text-emerald-300 break-all">{preview}</p>
                 </div>
               )}
               <div className="flex items-center justify-between pt-1">
