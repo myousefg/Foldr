@@ -2,9 +2,12 @@
 Foldr Native Backend
 FastAPI + SQLite + watchdog (real folder monitoring + file moves)
 """
-import os, re, shutil, sqlite3, logging, threading, uuid, time
-from contextlib import asynccontextmanager
+import os, re, shutil, sqlite3, logging, threading, traceback as _traceback, uuid, time
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone, timedelta
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import List, Optional
 
@@ -18,10 +21,33 @@ from watchdog.observers import Observer
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(os.environ.get("FOLDR_DATA", Path.home() / ".foldr"))
 BASE_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = BASE_DIR / "foldr.db"
+DB_PATH  = BASE_DIR / "foldr.db"
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# ── Logging ───────────────────────────────────────────────────────────────────
+
+LOG_DIR = BASE_DIR / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+_LOG_FMT = "%(asctime)s %(levelname)-8s %(message)s"
+_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+
+# General application logger — console only
+logging.basicConfig(level=logging.INFO, format=_LOG_FMT, datefmt=_LOG_DATEFMT)
 log = logging.getLogger("foldr")
+
+# Database-specific logger — file + console
+db_log = logging.getLogger("foldr.db")
+db_log.setLevel(logging.DEBUG)
+db_log.propagate = True   # also surfaces to console via root handler
+
+_db_file_handler = RotatingFileHandler(
+    filename=str(LOG_DIR / "database.log"),
+    maxBytes=10 * 1024 * 1024,   # 10 MB
+    backupCount=3,
+    encoding="utf-8",
+)
+_db_file_handler.setFormatter(logging.Formatter(_LOG_FMT, datefmt=_LOG_DATEFMT))
+db_log.addHandler(_db_file_handler)
 
 # ── SQLite ────────────────────────────────────────────────────────────────────
 _db_lock = threading.Lock()
@@ -32,25 +58,54 @@ def _conn():
     c.execute("PRAGMA journal_mode=WAL")
     return c
 
+def _fmt_query(sql: str, params) -> str:
+    """Format a query + params for log output — keeps messages self-contained."""
+    p_repr = repr(params) if params else "()"
+    return f"SQL: {sql.strip()}  |  params: {p_repr}"
+
 def db_one(sql, p=()):
     with _db_lock:
         c = _conn()
         try:
             r = c.execute(sql, p).fetchone()
             return dict(r) if r else None
-        finally: c.close()
+        except sqlite3.Error as e:
+            db_log.error(
+                "db_one() failed — %s\n%s\n%s",
+                e, _fmt_query(sql, p), _traceback.format_exc().rstrip(),
+            )
+            raise
+        finally:
+            c.close()
 
 def db_all(sql, p=()):
     with _db_lock:
         c = _conn()
-        try: return [dict(r) for r in c.execute(sql, p).fetchall()]
-        finally: c.close()
+        try:
+            return [dict(r) for r in c.execute(sql, p).fetchall()]
+        except sqlite3.Error as e:
+            db_log.error(
+                "db_all() failed — %s\n%s\n%s",
+                e, _fmt_query(sql, p), _traceback.format_exc().rstrip(),
+            )
+            raise
+        finally:
+            c.close()
 
 def db_run(sql, p=()):
     with _db_lock:
         c = _conn()
-        try: c.execute(sql, p); c.commit()
-        finally: c.close()
+        try:
+            c.execute(sql, p)
+            c.commit()
+        except sqlite3.Error as e:
+            db_log.error(
+                "db_run() failed — %s\n%s\n%s",
+                e, _fmt_query(sql, p), _traceback.format_exc().rstrip(),
+            )
+            raise
+        finally:
+            c.close()
 
 # ── Schema ────────────────────────────────────────────────────────────────────
 def init_db():
@@ -236,8 +291,18 @@ def do_move(src, dst, orig_name, new_name, folder, rule_id, rule_name):
             VALUES (?,?,?,?,?,?,?,?,?,0,?,?)""",
             (str(uuid.uuid4()), orig_name, abs_src, new_name, final_dst, folder,
              rule_name, rule_id, now, ext, fid))
-    except Exception as db_err:
-        log.error(f"DB log failed after successful move {abs_src} → {final_dst}: {db_err}")
+    except sqlite3.Error as db_err:
+        # CRITICAL: the file was already moved on disk but the DB record failed.
+        # Log with full detail so the operator can manually reconcile if needed.
+        db_log.critical(
+            "FILE MOVED BUT NOT RECORDED IN DB — manual reconciliation may be required.\n"
+            "  original : %s\n"
+            "  moved to : %s\n"
+            "  rule     : %s (id=%s)\n"
+            "  error    : %s\n%s",
+            abs_src, final_dst, rule_name, rule_id,
+            db_err, _traceback.format_exc().rstrip(),
+        )
 
     log.info(f"Moved: {orig_name} -> {final_dst}")
     return final_dst
@@ -307,6 +372,73 @@ _pending_paths: set = set()
 _pending_lock = threading.Lock()
 _move_lock = threading.Lock()
 
+# ── Stale-file reconciler ─────────────────────────────────────────────────────
+# Strategy:
+#   1. Group records by their parent directory.
+#   2. os.path.isdir(parent) — one cheap call per folder.
+#      If the whole folder is gone, every file in it is stale immediately.
+#   3. For files whose parent still exists, check each file in parallel
+#      (thread pool) so a slow filesystem never blocks for N×timeout.
+# Worst-case latency: one isdir() timeout for the deleted folder (~0 s on
+# local NTFS/ext4) + parallel isfile() for survivors.  In practice <0.1 s.
+_reconciler_stop = threading.Event()
+
+def _reconcile_once():
+    rows = db_all("SELECT id, new_path FROM organized_files WHERE new_path IS NOT NULL AND new_path != ''")
+    if not rows:
+        return
+
+    # Group by parent directory
+    by_parent: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        by_parent[os.path.dirname(r["new_path"])].append(r)
+
+    stale_ids: list[str] = []
+
+    for parent, entries in by_parent.items():
+        if not os.path.isdir(parent):
+            # Whole folder gone — all entries are stale, no per-file I/O needed
+            stale_ids.extend(e["id"] for e in entries)
+        else:
+            # Folder exists — check individual files in parallel
+            def _check(entry):
+                return entry["id"] if not os.path.isfile(entry["new_path"]) else None
+            with _reconcile_executor() as ex:
+                results = ex.map(_check, entries)
+            stale_ids.extend(r for r in results if r is not None)
+
+    if not stale_ids:
+        return
+    placeholders = ",".join("?" * len(stale_ids))
+    db_run(f"DELETE FROM activity_log WHERE file_id IN ({placeholders})", tuple(stale_ids))
+    db_run(f"DELETE FROM organized_files WHERE id IN ({placeholders})", tuple(stale_ids))
+    log.info(f"Reconciler: removed {len(stale_ids)} stale file record(s)")
+
+@contextmanager
+def _reconcile_executor():
+    """Short-lived thread pool for parallel isfile checks."""
+    ex = ThreadPoolExecutor(max_workers=16, thread_name_prefix="reconcile")
+    try:
+        yield ex
+    finally:
+        ex.shutdown(wait=True)
+
+def _reconcile_loop():
+    """Background thread: purge DB records for files that no longer exist."""
+    while not _reconciler_stop.wait(timeout=2):
+        try:
+            _reconcile_once()
+        except Exception as e:
+            log.warning(f"Reconciler error: {e}")
+
+def start_reconciler():
+    _reconciler_stop.clear()
+    t = threading.Thread(target=_reconcile_loop, daemon=True, name="foldr-reconciler")
+    t.start()
+
+def stop_reconciler():
+    _reconciler_stop.set()
+
 def start_watcher(folder):
     global _observer
     with _obs_lock:
@@ -331,8 +463,10 @@ async def lifespan(app: FastAPI):
     s = db_one("SELECT * FROM settings WHERE id='default'") or {}
     if s.get("monitoring_enabled") and s.get("monitored_folder"):
         start_watcher(s["monitored_folder"])
+    start_reconciler()
     yield
     stop_watcher()
+    stop_reconciler()
 
 app = FastAPI(lifespan=lifespan)
 api = APIRouter(prefix="/api")
@@ -775,6 +909,13 @@ def _safe_full_path(folder: str, settings: dict) -> Optional[str]:
         return resolve_dest(folder, settings)
     except Exception:
         return None
+
+@api.post("/organize/reconcile")
+def trigger_reconcile():
+    """Immediately purge DB records for files deleted from disk.
+    Called by the Dashboard on mount so the Folders section is always current."""
+    _reconcile_once()
+    return {"message": "reconciled"}
 
 @api.get("/stats")
 def get_stats():

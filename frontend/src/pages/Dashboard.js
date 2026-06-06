@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { statsApi, settingsApi, pendingApi } from '@/lib/api';
+import { statsApi, settingsApi, pendingApi, organizeApi } from '@/lib/api';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -68,6 +68,11 @@ export default function Dashboard() {
     statsApi.get().then(s => {
       if (s.recent_activity?.[0]) lastActivityId.current = s.recent_activity[0].id;
     }).catch(() => {});
+  }, []);
+
+  // Reconcile stale file records on mount so Folders section is immediately accurate
+  useEffect(() => {
+    organizeApi.reconcile().catch(() => {});
   }, []);
 
   useEffect(() => {
