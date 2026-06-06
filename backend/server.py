@@ -2,11 +2,12 @@
 Foldr Native Backend
 FastAPI + SQLite + watchdog (real folder monitoring + file moves)
 """
-import os, re, shutil, sqlite3, logging, threading, uuid, time
+import os, re, shutil, sqlite3, logging, threading, traceback as _traceback, uuid, time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone, timedelta
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import List, Optional
 
@@ -20,10 +21,33 @@ from watchdog.observers import Observer
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(os.environ.get("FOLDR_DATA", Path.home() / ".foldr"))
 BASE_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = BASE_DIR / "foldr.db"
+DB_PATH  = BASE_DIR / "foldr.db"
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# ── Logging ───────────────────────────────────────────────────────────────────
+
+LOG_DIR = BASE_DIR / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+_LOG_FMT = "%(asctime)s %(levelname)-8s %(message)s"
+_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+
+# General application logger — console only
+logging.basicConfig(level=logging.INFO, format=_LOG_FMT, datefmt=_LOG_DATEFMT)
 log = logging.getLogger("foldr")
+
+# Database-specific logger — file + console
+db_log = logging.getLogger("foldr.db")
+db_log.setLevel(logging.DEBUG)
+db_log.propagate = True   # also surfaces to console via root handler
+
+_db_file_handler = RotatingFileHandler(
+    filename=str(LOG_DIR / "database.log"),
+    maxBytes=10 * 1024 * 1024,   # 10 MB
+    backupCount=3,
+    encoding="utf-8",
+)
+_db_file_handler.setFormatter(logging.Formatter(_LOG_FMT, datefmt=_LOG_DATEFMT))
+db_log.addHandler(_db_file_handler)
 
 # ── SQLite ────────────────────────────────────────────────────────────────────
 _db_lock = threading.Lock()
@@ -34,25 +58,54 @@ def _conn():
     c.execute("PRAGMA journal_mode=WAL")
     return c
 
+def _fmt_query(sql: str, params) -> str:
+    """Format a query + params for log output — keeps messages self-contained."""
+    p_repr = repr(params) if params else "()"
+    return f"SQL: {sql.strip()}  |  params: {p_repr}"
+
 def db_one(sql, p=()):
     with _db_lock:
         c = _conn()
         try:
             r = c.execute(sql, p).fetchone()
             return dict(r) if r else None
-        finally: c.close()
+        except sqlite3.Error as e:
+            db_log.error(
+                "db_one() failed — %s\n%s\n%s",
+                e, _fmt_query(sql, p), _traceback.format_exc().rstrip(),
+            )
+            raise
+        finally:
+            c.close()
 
 def db_all(sql, p=()):
     with _db_lock:
         c = _conn()
-        try: return [dict(r) for r in c.execute(sql, p).fetchall()]
-        finally: c.close()
+        try:
+            return [dict(r) for r in c.execute(sql, p).fetchall()]
+        except sqlite3.Error as e:
+            db_log.error(
+                "db_all() failed — %s\n%s\n%s",
+                e, _fmt_query(sql, p), _traceback.format_exc().rstrip(),
+            )
+            raise
+        finally:
+            c.close()
 
 def db_run(sql, p=()):
     with _db_lock:
         c = _conn()
-        try: c.execute(sql, p); c.commit()
-        finally: c.close()
+        try:
+            c.execute(sql, p)
+            c.commit()
+        except sqlite3.Error as e:
+            db_log.error(
+                "db_run() failed — %s\n%s\n%s",
+                e, _fmt_query(sql, p), _traceback.format_exc().rstrip(),
+            )
+            raise
+        finally:
+            c.close()
 
 # ── Schema ────────────────────────────────────────────────────────────────────
 def init_db():
@@ -238,8 +291,18 @@ def do_move(src, dst, orig_name, new_name, folder, rule_id, rule_name):
             VALUES (?,?,?,?,?,?,?,?,?,0,?,?)""",
             (str(uuid.uuid4()), orig_name, abs_src, new_name, final_dst, folder,
              rule_name, rule_id, now, ext, fid))
-    except Exception as db_err:
-        log.error(f"DB log failed after successful move {abs_src} → {final_dst}: {db_err}")
+    except sqlite3.Error as db_err:
+        # CRITICAL: the file was already moved on disk but the DB record failed.
+        # Log with full detail so the operator can manually reconcile if needed.
+        db_log.critical(
+            "FILE MOVED BUT NOT RECORDED IN DB — manual reconciliation may be required.\n"
+            "  original : %s\n"
+            "  moved to : %s\n"
+            "  rule     : %s (id=%s)\n"
+            "  error    : %s\n%s",
+            abs_src, final_dst, rule_name, rule_id,
+            db_err, _traceback.format_exc().rstrip(),
+        )
 
     log.info(f"Moved: {orig_name} -> {final_dst}")
     return final_dst
