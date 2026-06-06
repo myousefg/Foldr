@@ -3,7 +3,9 @@ Foldr Native Backend
 FastAPI + SQLite + watchdog (real folder monitoring + file moves)
 """
 import os, re, shutil, sqlite3, logging, threading, uuid, time
-from contextlib import asynccontextmanager
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional
@@ -307,6 +309,73 @@ _pending_paths: set = set()
 _pending_lock = threading.Lock()
 _move_lock = threading.Lock()
 
+# ── Stale-file reconciler ─────────────────────────────────────────────────────
+# Strategy:
+#   1. Group records by their parent directory.
+#   2. os.path.isdir(parent) — one cheap call per folder.
+#      If the whole folder is gone, every file in it is stale immediately.
+#   3. For files whose parent still exists, check each file in parallel
+#      (thread pool) so a slow filesystem never blocks for N×timeout.
+# Worst-case latency: one isdir() timeout for the deleted folder (~0 s on
+# local NTFS/ext4) + parallel isfile() for survivors.  In practice <0.1 s.
+_reconciler_stop = threading.Event()
+
+def _reconcile_once():
+    rows = db_all("SELECT id, new_path FROM organized_files WHERE new_path IS NOT NULL AND new_path != ''")
+    if not rows:
+        return
+
+    # Group by parent directory
+    by_parent: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        by_parent[os.path.dirname(r["new_path"])].append(r)
+
+    stale_ids: list[str] = []
+
+    for parent, entries in by_parent.items():
+        if not os.path.isdir(parent):
+            # Whole folder gone — all entries are stale, no per-file I/O needed
+            stale_ids.extend(e["id"] for e in entries)
+        else:
+            # Folder exists — check individual files in parallel
+            def _check(entry):
+                return entry["id"] if not os.path.isfile(entry["new_path"]) else None
+            with _reconcile_executor() as ex:
+                results = ex.map(_check, entries)
+            stale_ids.extend(r for r in results if r is not None)
+
+    if not stale_ids:
+        return
+    placeholders = ",".join("?" * len(stale_ids))
+    db_run(f"DELETE FROM activity_log WHERE file_id IN ({placeholders})", tuple(stale_ids))
+    db_run(f"DELETE FROM organized_files WHERE id IN ({placeholders})", tuple(stale_ids))
+    log.info(f"Reconciler: removed {len(stale_ids)} stale file record(s)")
+
+@contextmanager
+def _reconcile_executor():
+    """Short-lived thread pool for parallel isfile checks."""
+    ex = ThreadPoolExecutor(max_workers=16, thread_name_prefix="reconcile")
+    try:
+        yield ex
+    finally:
+        ex.shutdown(wait=True)
+
+def _reconcile_loop():
+    """Background thread: purge DB records for files that no longer exist."""
+    while not _reconciler_stop.wait(timeout=2):
+        try:
+            _reconcile_once()
+        except Exception as e:
+            log.warning(f"Reconciler error: {e}")
+
+def start_reconciler():
+    _reconciler_stop.clear()
+    t = threading.Thread(target=_reconcile_loop, daemon=True, name="foldr-reconciler")
+    t.start()
+
+def stop_reconciler():
+    _reconciler_stop.set()
+
 def start_watcher(folder):
     global _observer
     with _obs_lock:
@@ -331,8 +400,10 @@ async def lifespan(app: FastAPI):
     s = db_one("SELECT * FROM settings WHERE id='default'") or {}
     if s.get("monitoring_enabled") and s.get("monitored_folder"):
         start_watcher(s["monitored_folder"])
+    start_reconciler()
     yield
     stop_watcher()
+    stop_reconciler()
 
 app = FastAPI(lifespan=lifespan)
 api = APIRouter(prefix="/api")
@@ -775,6 +846,13 @@ def _safe_full_path(folder: str, settings: dict) -> Optional[str]:
         return resolve_dest(folder, settings)
     except Exception:
         return None
+
+@api.post("/organize/reconcile")
+def trigger_reconcile():
+    """Immediately purge DB records for files deleted from disk.
+    Called by the Dashboard on mount so the Folders section is always current."""
+    _reconcile_once()
+    return {"message": "reconciled"}
 
 @api.get("/stats")
 def get_stats():
