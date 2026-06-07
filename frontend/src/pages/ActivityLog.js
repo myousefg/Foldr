@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
-import { ArrowRight, RotateCcw, Trash2, RefreshCw, ExternalLink, Search, X, Bell } from 'lucide-react';
+import { ArrowRight, RotateCcw, Trash2, RefreshCw, ExternalLink, Search, X, Bell, AlertTriangle } from 'lucide-react';
 
 const isElectron = !!window.electronAPI;
 
@@ -44,8 +44,9 @@ export default function ActivityLog() {
   // Filtered log
   const filtered = useMemo(() => {
     let result = log;
-    if (filterStatus === 'ACTIVE')  result = result.filter(e => !e.undone);
-    if (filterStatus === 'UNDONE')  result = result.filter(e => e.undone);
+    if (filterStatus === 'ACTIVE')   result = result.filter(e => !e.undone && e.duplicate_action !== 'skipped_duplicate');
+    if (filterStatus === 'UNDONE')   result = result.filter(e => e.undone);
+    if (filterStatus === 'SKIPPED')  result = result.filter(e => e.duplicate_action === 'skipped_duplicate');
     if (filterRule !== 'ALL') result = result.filter(e => e.rule_name === filterRule);
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -169,6 +170,7 @@ export default function ActivityLog() {
             <option value="ALL">All status</option>
             <option value="ACTIVE">Moved</option>
             <option value="UNDONE">Undone</option>
+            <option value="SKIPPED">Skipped duplicate</option>
           </select>
 
           {/* Rule filter */}
@@ -215,11 +217,15 @@ export default function ActivityLog() {
             ))}
           </div>
 
-          {filtered.map(entry => (
+          {filtered.map(entry => {
+            const isSkippedDup = entry.duplicate_action === 'skipped_duplicate';
+            return (
             <div
               key={entry.id}
               className={`grid grid-cols-[80px_1fr_1fr_180px_64px] gap-3 items-center border rounded-lg px-4 py-3 transition-colors ${
-                entry.undone ? 'opacity-40 bg-muted/10' : 'bg-background hover:bg-muted/20'
+                entry.undone      ? 'opacity-40 bg-muted/10'
+                : isSkippedDup   ? 'opacity-60 bg-amber-950/10 border-amber-900/30'
+                :                  'bg-background hover:bg-muted/20'
               }`}
             >
               <span className="font-mono text-xs text-muted-foreground tabular-nums">
@@ -229,17 +235,26 @@ export default function ActivityLog() {
                 {entry.original_name}
               </span>
               <div className="flex items-center gap-1.5 min-w-0">
-                <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
-                <span className="font-mono text-xs font-medium truncate" title={entry.new_name}>{entry.new_name}</span>
+                {isSkippedDup
+                  ? <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                  : <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />}
+                <span className="font-mono text-xs font-medium truncate" title={entry.new_name}>
+                  {isSkippedDup ? 'skipped — duplicate' : entry.new_name}
+                </span>
               </div>
               <div className="min-w-0">
-                <Badge variant="secondary" className="text-[10px] font-mono max-w-full truncate block text-center" title={entry.destination_folder}>
+                <Badge
+                  variant="secondary"
+                  className={`text-[10px] font-mono max-w-full truncate block text-center ${isSkippedDup ? 'border-amber-500/30 text-amber-500' : ''}`}
+                  title={entry.destination_folder}
+                >
                   {entry.destination_folder}
                 </Badge>
               </div>
               <div className="flex items-center justify-end gap-1.5 shrink-0">
                 {entry.undone && <span className="text-[9px] text-muted-foreground uppercase tracking-wider">undone</span>}
-                {isElectron && entry.new_path && !entry.undone && (
+                {isSkippedDup && <span className="text-[9px] text-amber-500 uppercase tracking-wider">skipped</span>}
+                {isElectron && entry.new_path && !entry.undone && !isSkippedDup && (
                   <button
                     onClick={() => openFolder(entry.new_path)}
                     className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors"
@@ -248,7 +263,7 @@ export default function ActivityLog() {
                     <ExternalLink className="w-3.5 h-3.5" />
                   </button>
                 )}
-                {!entry.undone && (
+                {!entry.undone && !isSkippedDup && (
                   <button
                     onClick={() => undo(entry.id)}
                     disabled={undoBlocked}
@@ -264,7 +279,7 @@ export default function ActivityLog() {
                 )}
               </div>
             </div>
-          ))}
+          );})}
         </div>
       )}
     </div>

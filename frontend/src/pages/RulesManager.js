@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from 'sonner';
-import { Plus, Pencil, Trash2, ChevronUp, ChevronDown, GraduationCap, Briefcase, Code, Folder, Camera, Palette, BookOpen, Upload, Download, AlertTriangle } from 'lucide-react';
+import { Plus, Pencil, Trash2, ChevronUp, ChevronDown, GraduationCap, Briefcase, Code, Folder, Camera, Palette, BookOpen, Upload, Download, AlertTriangle, X } from 'lucide-react';
 
 const isElectron = !!window.electronAPI;
 
@@ -26,6 +26,8 @@ const templateMeta = {
 const defaultForm = {
   name: '', condition_type: 'extension', condition_value: '',
   destination_folder: '', rename_template: '{date}_{originalname_cleaned}', enabled: true,
+  extra_conditions: [],
+  min_size_mb: '', max_age_days: '',
 };
 
 export default function RulesManager() {
@@ -34,6 +36,7 @@ export default function RulesManager() {
   const [editingRule, setEditingRule] = useState(null);
   const [form, setForm]               = useState(defaultForm);
   const [saving, setSaving]           = useState(false);
+  const [sizeAgeOpen, setSizeAgeOpen] = useState(false);
   const [preview, setPreview]         = useState('');
   const [previewLoading, setPreviewLoading] = useState(false);
   const [applyingPreset, setApplyingPreset] = useState(null);
@@ -93,13 +96,17 @@ export default function RulesManager() {
       .finally(() => { if (!controller.signal.aborted) setPreviewLoading(false); });
 
     return () => controller.abort();
-  }, [form.rename_template, form.condition_type, form.condition_value, form.destination_folder]);
+  }, [form.rename_template, form.condition_type, form.condition_value, form.destination_folder, form.extra_conditions]);
 
-  const openAdd  = () => { setEditingRule(null); setForm(defaultForm); setShowDialog(true); };
+  const openAdd  = () => { setEditingRule(null); setForm(defaultForm); setSizeAgeOpen(false); setShowDialog(true); };
   const openEdit = r => {
     setEditingRule(r);
+    const minSizeMb = r.min_size_bytes ? (r.min_size_bytes / (1024 * 1024)).toString() : '';
     setForm({ name: r.name, condition_type: r.condition_type, condition_value: r.condition_value,
-              destination_folder: r.destination_folder, rename_template: r.rename_template || '', enabled: r.enabled });
+              destination_folder: r.destination_folder, rename_template: r.rename_template || '',
+              enabled: r.enabled, extra_conditions: r.extra_conditions || [],
+              min_size_mb: minSizeMb, max_age_days: r.max_age_days?.toString() || '' });
+    setSizeAgeOpen(!!(r.min_size_bytes || r.max_age_days));
     setShowDialog(true);
   };
 
@@ -113,10 +120,23 @@ export default function RulesManager() {
     if (!form.name || !form.condition_value || !form.destination_folder) {
       toast.error('Fill in all required fields'); return;
     }
+    for (const ec of form.extra_conditions) {
+      if (!ec.condition_value.trim()) { toast.error('All conditions must have a value'); return; }
+    }
+    const minSizeBytes = form.min_size_mb !== '' ? Math.round(parseFloat(form.min_size_mb) * 1024 * 1024) : null;
+    const maxAgeDays   = form.max_age_days !== '' ? parseInt(form.max_age_days, 10) : null;
+    if (form.min_size_mb !== '' && (isNaN(minSizeBytes) || minSizeBytes < 0)) {
+      toast.error('Min Size must be a positive number'); return;
+    }
+    if (form.max_age_days !== '' && (isNaN(maxAgeDays) || maxAgeDays < 0)) {
+      toast.error('Max Age must be a positive integer'); return;
+    }
     setSaving(true);
     try {
-      if (editingRule) { await rulesApi.update(editingRule.id, form); toast.success('Rule updated'); }
-      else             { await rulesApi.create(form);                 toast.success('Rule created'); }
+      const payload = { ...form, min_size_bytes: minSizeBytes, max_age_days: maxAgeDays };
+      delete payload.min_size_mb;
+      if (editingRule) { await rulesApi.update(editingRule.id, payload); toast.success('Rule updated'); }
+      else             { await rulesApi.create(payload);                  toast.success('Rule created'); }
       setShowDialog(false); fetchRules();
     } catch { toast.error('Failed to save rule'); }
     setSaving(false);
@@ -240,14 +260,33 @@ export default function RulesManager() {
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-semibold truncate">{rule.name}</p>
-                <p className="text-xs text-muted-foreground font-mono mt-0.5 truncate">
-                  {rule.condition_type === 'extension' ? `ext = ${rule.condition_value}` : `name ∋ "${rule.condition_value}"`}
-                  {' → '}<span className="text-foreground">{rule.destination_folder}</span>
-                </p>
+                <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                  <p className="text-xs text-muted-foreground font-mono">
+                    {rule.condition_type === 'extension' ? `ext = ${rule.condition_value}` : `name ∋ "${rule.condition_value}"`}
+                  </p>
+                  {(rule.extra_conditions || []).map((ec, i) => (
+                    <span key={i} className="flex items-center gap-1">
+                      <span className="text-[10px] font-bold text-primary/70 uppercase tracking-wide">AND</span>
+                      <span className="text-xs text-muted-foreground font-mono">
+                        {ec.condition_type === 'extension' ? `ext = ${ec.condition_value}` : `name ∋ "${ec.condition_value}"`}
+                      </span>
+                    </span>
+                  ))}
+                  <span className="text-xs text-muted-foreground font-mono">
+                    {' → '}<span className="text-foreground">{rule.destination_folder}</span>
+                  </span>
+                </div>
               </div>
               <Badge variant="outline" className="text-[10px] font-mono hidden lg:flex shrink-0 max-w-[180px] truncate">
                 {rule.rename_template || 'no rename'}
               </Badge>
+              {(rule.min_size_bytes || rule.max_age_days) && (
+                <Badge variant="outline" className="text-[10px] font-mono hidden lg:flex shrink-0 border-primary/30 text-primary/70">
+                  {rule.min_size_bytes ? `≥${(rule.min_size_bytes/1048576).toFixed(1)}MB` : ''}
+                  {rule.min_size_bytes && rule.max_age_days ? ' · ' : ''}
+                  {rule.max_age_days ? `≤${rule.max_age_days}d` : ''}
+                </Badge>
+              )}
               <Switch checked={!!rule.enabled} onCheckedChange={() => handleToggle(rule)} />
               <button onClick={() => openEdit(rule)} className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors">
                 <Pencil className="w-3.5 h-3.5" />
@@ -313,20 +352,50 @@ export default function RulesManager() {
                 <Input value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))}
                   placeholder="PDFs to Documents" className="text-sm" />
               </Field>
-              <Field label="Condition Type">
-                <Select value={form.condition_type} onValueChange={v => setForm(p => ({ ...p, condition_type: v }))}>
-                  <SelectTrigger className="text-sm"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="extension">File Extension</SelectItem>
-                    <SelectItem value="keyword">Filename Keyword</SelectItem>
-                  </SelectContent>
-                </Select>
-              </Field>
-              <Field label={form.condition_type === 'extension' ? 'Extension' : 'Keyword'}>
-                <Input value={form.condition_value}
-                  onChange={e => setForm(p => ({ ...p, condition_value: e.target.value }))}
-                  placeholder={form.condition_type === 'extension' ? '.pdf' : 'invoice'}
-                  className="font-mono text-sm" />
+              <Field label="Conditions (AND Logic)">
+                <p className="text-xs text-muted-foreground -mt-1 mb-2">All conditions must match for the rule to apply.</p>
+                {/* Primary condition */}
+                <ConditionRow
+                  condType={form.condition_type}
+                  condValue={form.condition_value}
+                  onTypeChange={v => setForm(p => ({ ...p, condition_type: v }))}
+                  onValueChange={v => setForm(p => ({ ...p, condition_value: v }))}
+                  canRemove={false}
+                  label="Condition 1 (Primary)"
+                />
+                {/* Extra conditions */}
+                {form.extra_conditions.map((ec, i) => (
+                  <ConditionRow
+                    key={i}
+                    condType={ec.condition_type}
+                    condValue={ec.condition_value}
+                    onTypeChange={v => setForm(p => ({
+                      ...p,
+                      extra_conditions: p.extra_conditions.map((c, j) => j === i ? { ...c, condition_type: v } : c)
+                    }))}
+                    onValueChange={v => setForm(p => ({
+                      ...p,
+                      extra_conditions: p.extra_conditions.map((c, j) => j === i ? { ...c, condition_value: v } : c)
+                    }))}
+                    onRemove={() => setForm(p => ({
+                      ...p,
+                      extra_conditions: p.extra_conditions.filter((_, j) => j !== i)
+                    }))}
+                    canRemove={true}
+                    label={`Condition ${i + 2} (AND)`}
+                  />
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setForm(p => ({
+                    ...p,
+                    extra_conditions: [...p.extra_conditions, { condition_type: 'extension', condition_value: '' }]
+                  }))}
+                  className="flex items-center gap-1.5 text-xs text-primary hover:underline mt-1"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Add Condition
+                </button>
               </Field>
               <Field label="Destination Folder">
                 <div className="flex gap-2">
@@ -371,6 +440,52 @@ export default function RulesManager() {
                   }
                 </div>
               )}
+              {/* Size & Age Filters */}
+              <div className="border border-border rounded-lg overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setSizeAgeOpen(p => !p)}
+                  className="w-full flex items-center justify-between px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:bg-muted/30 transition-colors"
+                >
+                  <span className="flex items-center gap-1.5">
+                    {(form.min_size_mb || form.max_age_days) && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
+                    )}
+                    Size &amp; Age Filters (optional)
+                  </span>
+                  <ChevronDown className={`w-3.5 h-3.5 transition-transform ${sizeAgeOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {sizeAgeOpen && (
+                  <div className="px-3 pb-3 pt-1 space-y-3 border-t border-border">
+                    <p className="text-xs text-muted-foreground">Both are optional. Combined with AND logic.</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium text-muted-foreground">Min Size (MB)</label>
+                        <Input
+                          type="number" min="0" step="0.1"
+                          value={form.min_size_mb}
+                          onChange={e => setForm(p => ({ ...p, min_size_mb: e.target.value }))}
+                          placeholder="e.g. 1"
+                          className="font-mono text-sm"
+                        />
+                        <p className="text-[10px] text-muted-foreground">Only files ≥ this size.</p>
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium text-muted-foreground">Max Age (days)</label>
+                        <Input
+                          type="number" min="0" step="1"
+                          value={form.max_age_days}
+                          onChange={e => setForm(p => ({ ...p, max_age_days: e.target.value }))}
+                          placeholder="e.g. 7"
+                          className="font-mono text-sm"
+                        />
+                        <p className="text-[10px] text-muted-foreground">Only files modified ≤ N days ago.</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div className="flex items-center justify-between pt-1">
                 <Label className="text-sm font-medium">Enabled</Label>
                 <Switch checked={!!form.enabled} onCheckedChange={v => setForm(p => ({ ...p, enabled: v }))} />
@@ -385,6 +500,36 @@ export default function RulesManager() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function ConditionRow({ condType, condValue, onTypeChange, onValueChange, onRemove, canRemove, label }) {
+  return (
+    <div className="space-y-1.5 border border-border rounded-lg p-3 bg-muted/20 mb-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</span>
+        {canRemove && (
+          <button type="button" onClick={onRemove} className="text-muted-foreground hover:text-destructive">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+      <div className="flex gap-2">
+        <Select value={condType} onValueChange={onTypeChange}>
+          <SelectTrigger className="text-xs w-40 shrink-0"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="extension">File Extension</SelectItem>
+            <SelectItem value="keyword">Filename Keyword</SelectItem>
+          </SelectContent>
+        </Select>
+        <Input
+          value={condValue}
+          onChange={e => onValueChange(e.target.value)}
+          placeholder={condType === 'extension' ? '.pdf' : 'telkom'}
+          className="font-mono text-sm flex-1"
+        />
+      </div>
     </div>
   );
 }

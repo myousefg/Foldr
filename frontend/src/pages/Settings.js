@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { settingsApi, monitoredFoldersApi } from '@/lib/api';
 import { useTheme } from '@/context/ThemeProvider';
+import { useI18n } from '@/context/I18nProvider';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -44,6 +45,7 @@ function FolderInput({ label, description, value, onChange, placeholder }) {
 function MonitoredFoldersList({ folders, onAdd, onToggle, onRemove }) {
   const [newPath, setNewPath] = useState('');
   const [adding, setAdding] = useState(false);
+  const { t } = useI18n();
 
   const pickFolder = async () => {
     if (!isElectron) return;
@@ -66,15 +68,15 @@ function MonitoredFoldersList({ folders, onAdd, onToggle, onRemove }) {
   return (
     <div className="space-y-3">
       <Label className="text-xs font-medium tracking-wide uppercase text-muted-foreground">
-        Monitored Folders
+        {t('settings.monitoredFolders')}
       </Label>
       <p className="text-xs text-muted-foreground">
-        Foldr watches all folders below simultaneously. Files from any folder are processed with the same rules.
+        {t('settings.monitoredFoldersDesc')}
       </p>
 
       {/* Existing folders list */}
       {folders.length === 0 ? (
-        <p className="text-xs text-muted-foreground italic py-2">No folders added yet.</p>
+        <p className="text-xs text-muted-foreground italic py-2">{t('settings.noFolders')}</p>
       ) : (
         <div className="space-y-2">
           {folders.map(f => (
@@ -85,7 +87,7 @@ function MonitoredFoldersList({ folders, onAdd, onToggle, onRemove }) {
                 <Button
                   variant="ghost" size="sm"
                   onClick={() => onToggle(f.id, !f.enabled)}
-                  title={f.enabled ? 'Pause this folder' : 'Resume this folder'}
+                  title={f.enabled ? t('settings.pauseFolder') : t('settings.resumeFolder')}
                   className="h-7 w-7 p-0"
                 >
                   {f.enabled
@@ -96,7 +98,7 @@ function MonitoredFoldersList({ folders, onAdd, onToggle, onRemove }) {
                   <Button
                     variant="ghost" size="sm"
                     onClick={() => window.electronAPI.openFolder(f.path)}
-                    title="Open in Explorer"
+                    title={t('settings.openExplorer')}
                     className="h-7 w-7 p-0"
                   >
                     <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" />
@@ -105,7 +107,7 @@ function MonitoredFoldersList({ folders, onAdd, onToggle, onRemove }) {
                 <Button
                   variant="ghost" size="sm"
                   onClick={() => onRemove(f.id)}
-                  title="Remove folder"
+                  title={t('settings.removeFolder')}
                   className="h-7 w-7 p-0 hover:text-destructive"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
@@ -121,18 +123,18 @@ function MonitoredFoldersList({ folders, onAdd, onToggle, onRemove }) {
         <Input
           value={newPath}
           onChange={e => setNewPath(e.target.value)}
-          placeholder="e.g. C:\Users\You\Desktop"
+          placeholder={t('settings.folderPlaceholder')}
           className="font-mono text-sm flex-1"
           onKeyDown={e => e.key === 'Enter' && handleAdd()}
         />
         {isElectron && (
-          <Button variant="outline" size="sm" onClick={pickFolder} title="Browse">
+          <Button variant="outline" size="sm" onClick={pickFolder} title={t('common.browse')}>
             <Folder className="w-4 h-4" />
           </Button>
         )}
         <Button size="sm" onClick={handleAdd} disabled={adding || !newPath.trim()}>
           <Plus className="w-4 h-4 mr-1" />
-          Add
+          {t('settings.addFolder')}
         </Button>
       </div>
     </div>
@@ -146,6 +148,7 @@ export default function Settings() {
   const [autoStart, setAutoStart]         = useState(false);
   const [monFolders, setMonFolders]       = useState([]);
   const { theme, setTheme }               = useTheme();
+  const { lang, setLang, t }              = useI18n();
 
   const load = useCallback(async () => {
     try {
@@ -169,27 +172,27 @@ export default function Settings() {
   const save = async () => {
     if (!Object.keys(dirty).length) return;
     setSaving(true);
-    try { await settingsApi.update(dirty); setDirty({}); toast.success('Settings saved'); }
-    catch { toast.error('Failed to save'); }
+    try { await settingsApi.update(dirty); setDirty({}); toast.success(t('settings.saved')); }
+    catch { toast.error(t('settings.saveFailed')); }
     setSaving(false);
   };
 
   const handleAutoStart = async (enabled) => {
-    if (!isElectron) { toast.error('Auto-start only works in the packaged app'); return; }
+    if (!isElectron) { toast.error(t('settings.autoStartElectronOnly')); return; }
     try {
       await window.electronAPI.setAutoStart(enabled);
       setAutoStart(enabled);
-      toast.success(enabled ? 'Foldr will now start with Windows' : 'Auto-start disabled');
-    } catch { toast.error('Failed to set auto-start'); }
+      toast.success(enabled ? t('settings.autoStartEnabled') : t('settings.autoStartDisabled'));
+    } catch { toast.error(t('settings.autoStartFailed')); }
   };
 
   const handleAddFolder = async (path) => {
     try {
       const added = await monitoredFoldersApi.add(path);
       setMonFolders(prev => [...prev, added]);
-      toast.success(`Now monitoring: ${path}`);
+      toast.success(t('settings.folderAdded', { path }));
     } catch (err) {
-      const msg = err?.response?.data?.detail || 'Failed to add folder';
+      const msg = err?.response?.data?.detail || t('common.error');
       toast.error(msg);
     }
   };
@@ -198,32 +201,32 @@ export default function Settings() {
     try {
       const updated = await monitoredFoldersApi.toggle(id, enabled);
       setMonFolders(prev => prev.map(f => f.id === id ? updated : f));
-      toast.success(enabled ? 'Folder monitoring resumed' : 'Folder monitoring paused');
-    } catch { toast.error('Failed to update folder'); }
+      toast.success(enabled ? t('settings.folderResumed') : t('settings.folderPaused'));
+    } catch { toast.error(t('common.error')); }
   };
 
   const handleRemoveFolder = async (id) => {
     try {
       await monitoredFoldersApi.remove(id);
       setMonFolders(prev => prev.filter(f => f.id !== id));
-      toast.success('Folder removed');
-    } catch { toast.error('Failed to remove folder'); }
+      toast.success(t('settings.folderRemoved'));
+    } catch { toast.error(t('common.error')); }
   };
 
-  if (!cfg) return <div className="p-6 text-sm text-muted-foreground">Loading…</div>;
+  if (!cfg) return <div className="p-6 text-sm text-muted-foreground">{t('common.loading')}</div>;
 
   return (
     <div className="space-y-8 animate-fade-in max-w-2xl">
       <div>
-        <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">Settings</h1>
-        <p className="text-sm text-muted-foreground mt-1">Configure monitoring, naming, and appearance.</p>
+        <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">{t('settings.title')}</h1>
+        <p className="text-sm text-muted-foreground mt-1">{t('settings.subtitle')}</p>
       </div>
 
       <Separator />
 
       {/* Folders */}
       <section className="space-y-5">
-        <h2 className="text-xs font-semibold tracking-[0.15em] uppercase text-muted-foreground">Folders</h2>
+        <h2 className="text-xs font-semibold tracking-[0.15em] uppercase text-muted-foreground">{t('settings.folders')}</h2>
         <MonitoredFoldersList
           folders={monFolders}
           onAdd={handleAddFolder}
@@ -231,11 +234,11 @@ export default function Settings() {
           onRemove={handleRemoveFolder}
         />
         <FolderInput
-          label="Base Output Folder"
-          description='Rule destinations like "Documents" are relative to this. Leave blank to use your home directory.'
+          label={t('settings.baseOutputFolder')}
+          description={t('settings.baseOutputDesc')}
           value={cfg.base_output_folder || ''}
           onChange={v => set('base_output_folder', v)}
-          placeholder="e.g. C:\Users\You  (default: home directory)"
+          placeholder="e.g. C:\Users\You"
         />
       </section>
 
@@ -243,28 +246,28 @@ export default function Settings() {
 
       {/* Behaviour */}
       <section className="space-y-5">
-        <h2 className="text-xs font-semibold tracking-[0.15em] uppercase text-muted-foreground">Behaviour</h2>
+        <h2 className="text-xs font-semibold tracking-[0.15em] uppercase text-muted-foreground">{t('settings.behaviour')}</h2>
         <ToggleRow
-          label="Preview before moving"
-          description="Queue detected files for your review instead of moving them immediately."
+          label={t('settings.previewBeforeMove')}
+          description={t('settings.previewBeforeMoveDesc')}
           checked={!!cfg.preview_before_apply}
           onChange={v => set('preview_before_apply', v)}
         />
         <ToggleRow
-          label="Monitoring enabled"
-          description="Pause all folder monitoring without losing your configuration."
+          label={t('settings.monitoringEnabled')}
+          description={t('settings.monitoringEnabledDesc')}
           checked={!!cfg.monitoring_enabled}
           onChange={v => set('monitoring_enabled', v)}
         />
         <ToggleRow
-          label="Auto-clean filenames"
-          description="Strip camera codes (IMG_, DSC_), copy markers, and normalise spacing."
+          label={t('settings.autoClean')}
+          description={t('settings.autoCleanDesc')}
           checked={!!cfg.auto_clean_names}
           onChange={v => set('auto_clean_names', v)}
         />
         <ToggleRow
-          label="Start with Windows"
-          description="Launch Foldr automatically when you log in. App opens minimized to tray."
+          label={t('settings.startWithWindows')}
+          description={t('settings.startWithWindowsDesc')}
           checked={autoStart}
           onChange={handleAutoStart}
         />
@@ -274,9 +277,9 @@ export default function Settings() {
 
       {/* Rename template */}
       <section className="space-y-3">
-        <h2 className="text-xs font-semibold tracking-[0.15em] uppercase text-muted-foreground">Default Rename Template</h2>
+        <h2 className="text-xs font-semibold tracking-[0.15em] uppercase text-muted-foreground">{t('settings.renameTemplate')}</h2>
         <p className="text-xs text-muted-foreground">
-          Used when a rule has no template.&nbsp;
+          {t('settings.renameTemplateDesc')}&nbsp;
           Tokens:&nbsp;
           <code className="bg-muted px-1 rounded text-[11px]">{'{date}'}</code>&nbsp;
           <code className="bg-muted px-1 rounded text-[11px]">{'{originalname_cleaned}'}</code>&nbsp;
@@ -295,10 +298,14 @@ export default function Settings() {
 
       {/* Appearance */}
       <section className="space-y-4">
-        <h2 className="text-xs font-semibold tracking-[0.15em] uppercase text-muted-foreground">Appearance</h2>
-        <p className="text-xs text-muted-foreground">Choose the colour theme for the app.</p>
+        <h2 className="text-xs font-semibold tracking-[0.15em] uppercase text-muted-foreground">{t('settings.appearance')}</h2>
+        <p className="text-xs text-muted-foreground">{t('settings.appearanceDesc')}</p>
         <div className="flex gap-2">
-          {themeOptions.map(opt => {
+          {[
+            { value: 'light',  icon: Sun,     labelKey: 'settings.light'  },
+            { value: 'dark',   icon: Moon,    labelKey: 'settings.dark'   },
+            { value: 'system', icon: Monitor, labelKey: 'settings.system' },
+          ].map(opt => {
             const Icon   = opt.icon;
             const active = theme === opt.value;
             return (
@@ -312,16 +319,42 @@ export default function Settings() {
                 }`}
               >
                 <Icon className="w-4 h-4" strokeWidth={1.8} />
-                {opt.label}
+                {t(opt.labelKey)}
               </button>
             );
           })}
         </div>
       </section>
 
+      <Separator />
+
+      {/* Language */}
+      <section className="space-y-4">
+        <h2 className="text-xs font-semibold tracking-[0.15em] uppercase text-muted-foreground">{t('settings.language')}</h2>
+        <p className="text-xs text-muted-foreground">{t('settings.languageDesc')}</p>
+        <div className="flex gap-2">
+          {[
+            { value: 'en', label: 'English' },
+            { value: 'id', label: 'Bahasa Indonesia' },
+          ].map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => setLang(opt.value)}
+              className={`px-4 py-2 rounded-lg border text-sm font-medium transition-colors ${
+                lang === opt.value
+                  ? 'bg-primary text-primary-foreground border-primary'
+                  : 'bg-background text-muted-foreground border-border hover:bg-accent hover:text-foreground'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
       <div className="flex justify-end pt-2">
         <Button onClick={save} disabled={saving || !Object.keys(dirty).length}>
-          {saving ? 'Saving…' : 'Save Settings'}
+          {saving ? t('settings.saving') : t('settings.saveSettings')}
         </Button>
       </div>
     </div>
