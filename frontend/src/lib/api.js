@@ -7,7 +7,6 @@ export const rulesApi = {
   getAll:          ()        => api.get('/rules').then(r => r.data),
   create:          (data)    => api.post('/rules', data).then(r => r.data),
   update:          (id, d)   => api.put(`/rules/${id}`, d).then(r => r.data),
-  getConditions:   (id)      => api.get(`/rules/${id}/conditions`).then(r => r.data),
   delete:          (id)      => api.delete(`/rules/${id}`).then(r => r.data),
   reorder:         (ids)     => api.put('/rules/reorder', { rule_ids: ids }).then(r => r.data),
   getTemplates:    ()        => api.get('/rules/templates').then(r => r.data),
