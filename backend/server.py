@@ -898,6 +898,28 @@ RULE_TEMPLATES = {
 def _cv_key(ctype: str, cval: str) -> tuple:
     return (ctype.lower(), cval.lower().strip().lstrip("."))
 
+def _dest_key(ctype: str, cval: str, dest: str) -> tuple:
+    return _cv_key(ctype, cval) + (dest.lower().strip(),)
+
+def _sync_conditions(rule_id: str, primary_type: str, primary_value: str, extra: list):
+    db_run("DELETE FROM rule_conditions WHERE rule_id=?", (rule_id,))
+    all_conditions = [{"condition_type": primary_type, "condition_value": primary_value}] + \
+                     [{"condition_type": c.condition_type, "condition_value": c.condition_value} for c in extra]
+    for i, cond in enumerate(all_conditions):
+        db_run("INSERT INTO rule_conditions (id, rule_id, condition_type, condition_value, sort_order) VALUES (?,?,?,?,?)",
+               (str(uuid.uuid4()), rule_id, cond["condition_type"], cond["condition_value"], i))
+
+def _rule_with_conditions(rule: dict) -> dict:
+    conditions = db_all(
+        "SELECT condition_type, condition_value FROM rule_conditions WHERE rule_id=? ORDER BY sort_order",
+        (rule["id"],)
+    )
+    rule = dict(rule)
+    rule["extra_conditions"] = [
+        {"condition_type": c["condition_type"], "condition_value": c["condition_value"]}
+        for c in conditions[1:]
+    ]
+    return rule
 
 _preset_lock = threading.Lock()
 
@@ -912,14 +934,11 @@ def apply_template_route(ttype: str):
         raise HTTPException(409, "Already applying a preset — please wait.")
     try:
         existing_rules = db_all("SELECT condition_type, condition_value, destination_folder FROM rules")
-        existing_keys = {
-            _cv_key(r["condition_type"], r["condition_value"]) + (r["destination_folder"].lower().strip(),)
-            for r in existing_rules
-        }
+        existing_keys = {_dest_key(r["condition_type"], r["condition_value"], r["destination_folder"]) for r in existing_rules}
         count = db_count("rules")
         added_rules, skipped_vals = [], []
         for i, rd in enumerate(RULE_TEMPLATES[ttype]):
-            key = _cv_key(rd["condition_type"], rd["condition_value"]) + (rd["destination_folder"].lower().strip(),)
+            key = _dest_key(rd["condition_type"], rd["condition_value"], rd["destination_folder"])
             if key in existing_keys:
                 skipped_vals.append(rd["condition_value"])
                 continue
@@ -945,7 +964,7 @@ def remove_duplicate_rules():
     seen: set = set()
     deleted = 0
     for rule in all_rules:
-        key = _cv_key(rule["condition_type"], rule["condition_value"]) + (rule["destination_folder"].lower().strip(),)
+        key = _dest_key(rule["condition_type"], rule["condition_value"], rule["destination_folder"])
         if key in seen:
             db_run("DELETE FROM rule_conditions WHERE rule_id=?", (rule["id"],))
             db_run("DELETE FROM rules WHERE id=?", (rule["id"],))
@@ -968,17 +987,14 @@ def import_rules(data: ImportRulesData):
         db_run("DELETE FROM rule_conditions")
         db_run("DELETE FROM rules")
     existing_rules = db_all("SELECT condition_type, condition_value, destination_folder FROM rules")
-    existing_keys = {
-        _cv_key(r["condition_type"], r["condition_value"]) + '|' + r["destination_folder"].lower()
-        for r in existing_rules
-    }
+    existing_keys = {_dest_key(r["condition_type"], r["condition_value"], r["destination_folder"]) for r in existing_rules}
     count = db_count("rules")
     added, skipped = 0, 0
     for i, rule in enumerate(data.rules):
         ct  = rule.get("condition_type", "extension")
         cv  = rule.get("condition_value", "").lower().strip()
         dst = rule.get("destination_folder", "")
-        key = _cv_key(ct, cv) + '|' + dst.lower()
+        key = _dest_key(ct, cv, dst)
         if not data.replace and key in existing_keys:
             skipped += 1
             continue
@@ -991,36 +1007,13 @@ def import_rules(data: ImportRulesData):
                 rule.get("rename_template","{date}_{originalname_cleaned}"),
                 count + i, 1 if rule.get("enabled", True) else 0, now,
                 rule.get("min_size_bytes"), rule.get("max_age_days")))
-        # Sync conditions — support extra_conditions from export
         extra_raw = rule.get("extra_conditions", [])
-        class _EC:
+        class _Cond:
             def __init__(self, d): self.condition_type = d["condition_type"]; self.condition_value = d["condition_value"]
-        _sync_conditions(rid, ct, cv, [_EC(e) for e in extra_raw])
+        _sync_conditions(rid, ct, cv, [_Cond(e) for e in extra_raw])
         existing_keys.add(key)
         added += 1
     return {"added": added, "skipped": skipped}
-
-def _sync_conditions(rule_id: str, primary_type: str, primary_value: str, extra: list):
-    """Replace all rule_conditions for a rule with primary + extra conditions."""
-    db_run("DELETE FROM rule_conditions WHERE rule_id=?", (rule_id,))
-    all_conditions = [{"condition_type": primary_type, "condition_value": primary_value}] + \
-                     [{"condition_type": c.condition_type, "condition_value": c.condition_value} for c in extra]
-    for i, cond in enumerate(all_conditions):
-        db_run("INSERT INTO rule_conditions (id, rule_id, condition_type, condition_value, sort_order) VALUES (?,?,?,?,?)",
-               (str(uuid.uuid4()), rule_id, cond["condition_type"], cond["condition_value"], i))
-
-def _rule_with_conditions(rule: dict) -> dict:
-    """Attach extra_conditions list to a rule dict."""
-    conditions = db_all(
-        "SELECT condition_type, condition_value FROM rule_conditions WHERE rule_id=? ORDER BY sort_order",
-        (rule["id"],)
-    )
-    rule = dict(rule)
-    rule["extra_conditions"] = [
-        {"condition_type": c["condition_type"], "condition_value": c["condition_value"]}
-        for c in conditions[1:]  # first condition is the primary (already on rule row)
-    ]
-    return rule
 
 @api.get("/rules")
 def get_rules():
@@ -1067,11 +1060,8 @@ def update_rule(rule_id: str, rule: RuleUpdate):
     if extra_conditions is not None:
         primary_type  = fields.get("condition_type",  r["condition_type"])
         primary_value = fields.get("condition_value", r["condition_value"])
-        from pydantic import BaseModel as _BM
-        class _CI(_BM):
-            condition_type: str; condition_value: str
         _sync_conditions(rule_id, primary_type, primary_value,
-                         [_CI(condition_type=c["condition_type"], condition_value=c["condition_value"])
+                         [ConditionItem(condition_type=c["condition_type"], condition_value=c["condition_value"])
                           for c in extra_conditions])
     return _rule_with_conditions(r)
 
@@ -1313,7 +1303,6 @@ def organize_now():
     Skips files already present in organized_files (already moved by Foldr).
     Returns a summary: scanned, matched, moved/queued, skipped."""
     settings = db_one("SELECT * FROM settings WHERE id='default'") or {}
-    auto_clean = bool(settings.get("auto_clean_names", 1))
     preview = bool(settings.get("preview_before_apply", 1))
 
     # Collect all enabled monitored folders
@@ -1378,32 +1367,36 @@ def organize_now():
             tmpl = resolve_template(rule, settings)
             dest_dir = resolve_dest(rule["destination_folder"], settings)
             seq = next_seq(rule["destination_folder"])
-            new_name = apply_template(tmpl, filename, seq, rule["destination_folder"], auto_clean=auto_clean)
+            new_name = apply_template(tmpl, filename, seq, rule["destination_folder"])
             proposed = unique_path(os.path.join(dest_dir, new_name))
 
             if preview:
-                # Queue to pending_files for user review
-                existing_pending = db_one(
-                    "SELECT id FROM pending_files WHERE original_path=?", (abs_path,)
-                )
+                existing_pending = db_one("SELECT id FROM pending_files WHERE original_path=?", (abs_path,))
                 if existing_pending:
                     skipped += 1
                     continue
+                src_hash = sha256_file(full_path)
+                Path(dest_dir).mkdir(parents=True, exist_ok=True)
+                duplicate_of = find_duplicate_in_dest(full_path, dest_dir, src_hash)
                 db_run(
                     """INSERT OR REPLACE INTO pending_files
                        (id, original_path, proposed_path, proposed_name,
-                        destination_folder, rule_id, rule_name, detected_at)
-                       VALUES (?,?,?,?,?,?,?,?)""",
+                        destination_folder, rule_id, rule_name, detected_at,
+                        content_hash, duplicate_of)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
                     (str(uuid.uuid4()), abs_path, proposed, new_name,
-                     rule["destination_folder"], rule["id"], rule["name"], now_ts)
+                     rule["destination_folder"], rule["id"], rule["name"], now_ts,
+                     src_hash, duplicate_of)
                 )
                 already_pending.add(abs_path)
                 actioned += 1
                 destination_folders.add(rule["destination_folder"])
             else:
+                src_hash = sha256_file(full_path)
                 result = do_move(
                     abs_path, proposed, filename, new_name,
-                    rule["destination_folder"], rule["id"], rule["name"]
+                    rule["destination_folder"], rule["id"], rule["name"],
+                    content_hash=src_hash
                 )
                 if result:
                     actioned += 1

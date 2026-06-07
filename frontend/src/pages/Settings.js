@@ -12,11 +12,6 @@ import { Folder, ExternalLink, Sun, Moon, Monitor, Plus, Trash2, Eye, EyeOff } f
 
 const isElectron = !!window.electronAPI;
 
-const themeOptions = [
-  { value: 'light',  icon: Sun,     label: 'Light'  },
-  { value: 'dark',   icon: Moon,    label: 'Dark'   },
-  { value: 'system', icon: Monitor, label: 'System' },
-];
 
 function FolderInput({ label, description, value, onChange, placeholder }) {
   const pick = async () => {
