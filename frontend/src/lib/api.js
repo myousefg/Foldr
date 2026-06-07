@@ -21,6 +21,7 @@ export const organizeApi = {
   templatePreview: (filename, rename_template, destination_folder) =>
     api.post('/organize/template-preview', { filename, rename_template, destination_folder }).then(r => r.data),
   reconcile: () => api.post('/organize/reconcile').then(r => r.data),
+  organizeNow: () => api.post('/organize-now').then(r => r.data),
 };
 
 export const pendingApi = {

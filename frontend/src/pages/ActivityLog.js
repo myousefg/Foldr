@@ -14,6 +14,7 @@ export default function ActivityLog() {
   const [loading, setLoading]       = useState(false);
   const [search, setSearch]         = useState('');
   const [filterRule, setFilterRule] = useState('ALL');
+  const [filterStatus, setFilterStatus] = useState('ALL');
   const [pendingCount, setPendingCount] = useState(0); // tracks pending preview items
 
   const fetchLog = useCallback(async () => {
@@ -43,6 +44,8 @@ export default function ActivityLog() {
   // Filtered log
   const filtered = useMemo(() => {
     let result = log;
+    if (filterStatus === 'ACTIVE')  result = result.filter(e => !e.undone);
+    if (filterStatus === 'UNDONE')  result = result.filter(e => e.undone);
     if (filterRule !== 'ALL') result = result.filter(e => e.rule_name === filterRule);
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -53,7 +56,7 @@ export default function ActivityLog() {
       );
     }
     return result;
-  }, [log, search, filterRule]);
+  }, [log, search, filterRule, filterStatus]);
 
   const undo = async (id) => {
     if (pendingCount > 0) {
@@ -157,6 +160,17 @@ export default function ActivityLog() {
             )}
           </div>
 
+          {/* Status filter */}
+          <select
+            value={filterStatus}
+            onChange={e => setFilterStatus(e.target.value)}
+            className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            <option value="ALL">All status</option>
+            <option value="ACTIVE">Moved</option>
+            <option value="UNDONE">Undone</option>
+          </select>
+
           {/* Rule filter */}
           <select
             value={filterRule}
@@ -169,7 +183,7 @@ export default function ActivityLog() {
           </select>
 
           {/* Result count */}
-          {(search || filterRule !== 'ALL') && (
+          {(search || filterRule !== 'ALL' || filterStatus !== 'ALL') && (
             <span className="text-xs text-muted-foreground tabular-nums">
               {filtered.length} of {log.length}
             </span>
@@ -188,7 +202,7 @@ export default function ActivityLog() {
         <div className="flex flex-col items-center justify-center py-12 text-center border border-dashed rounded-lg">
           <Search className="w-8 h-8 text-muted-foreground/30 mb-3" />
           <p className="text-sm text-muted-foreground">No entries match your search.</p>
-          <button onClick={() => { setSearch(''); setFilterRule('ALL'); }} className="text-xs text-primary mt-2 hover:underline">
+          <button onClick={() => { setSearch(''); setFilterRule('ALL'); setFilterStatus('ALL'); }} className="text-xs text-primary mt-2 hover:underline">
             Clear filters
           </button>
         </div>
