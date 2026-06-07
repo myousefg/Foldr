@@ -1,14 +1,17 @@
 import { NavLink } from 'react-router-dom';
 import { LayoutDashboard, ListFilter, Clock, Settings, FolderOpen } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
-
-const navItems = [
-  { to: '/',         icon: LayoutDashboard, label: 'DASHBOARD' },
-  { to: '/rules',    icon: ListFilter,      label: 'RULES'     },
-  { to: '/activity', icon: Clock,           label: 'ACTIVITY'  },
-];
+import { useI18n } from '@/context/I18nProvider';
 
 export default function Sidebar() {
+  const { t } = useI18n();
+
+  const navItems = [
+    { to: '/',         icon: LayoutDashboard, label: t('nav.dashboard') },
+    { to: '/rules',    icon: ListFilter,      label: t('nav.rules')     },
+    { to: '/activity', icon: Clock,           label: t('nav.activity')  },
+  ];
+
   return (
     <aside className="w-52 border-r border-border bg-background flex flex-col shrink-0" data-testid="sidebar">
 
@@ -19,7 +22,7 @@ export default function Sidebar() {
           <span className="text-lg font-semibold tracking-tight">Foldr</span>
         </div>
         <p className="text-[10px] tracking-[0.2em] uppercase text-muted-foreground mt-1.5">
-          FILE ORGANIZER
+          {t('nav.fileOrganizer')}
         </p>
       </div>
 
@@ -63,7 +66,7 @@ export default function Sidebar() {
           data-testid="nav-settings"
         >
           <Settings className="w-4 h-4" strokeWidth={1.8} />
-          SETTINGS
+          {t('nav.settings')}
         </NavLink>
       </div>
 
