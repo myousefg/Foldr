@@ -490,6 +490,7 @@ class FoldrHandler(FileSystemEventHandler):
         rule = match_rule(filename, file_path=path)
         if not rule: return
         dest_dir = resolve_dest(rule["destination_folder"], settings)
+        seq = next_seq(rule["destination_folder"])
         auto_clean = bool(settings.get("auto_clean_names", 1))
         rule_tmpl = rule.get("rename_template")
         if rule_tmpl is None:
@@ -891,12 +892,15 @@ def apply_template_route(ttype: str):
     if not _preset_lock.acquire(blocking=False):
         raise HTTPException(409, "Already applying a preset — please wait.")
     try:
-        existing_rules = db_all("SELECT condition_type, condition_value FROM rules")
-        existing_keys = {_cv_key(r["condition_type"], r["condition_value"]) for r in existing_rules}
+        existing_rules = db_all("SELECT condition_type, condition_value, destination_folder FROM rules")
+        existing_keys = {
+            _cv_key(r["condition_type"], r["condition_value"]) + (r["destination_folder"].lower().strip(),)
+            for r in existing_rules
+        }
         count = db_one("SELECT COUNT(*) AS c FROM rules")["c"]
         added_rules, skipped_vals = [], []
         for i, rd in enumerate(RULE_TEMPLATES[ttype]):
-            key = _cv_key(rd["condition_type"], rd["condition_value"])
+            key = _cv_key(rd["condition_type"], rd["condition_value"]) + (rd["destination_folder"].lower().strip(),)
             if key in existing_keys:
                 skipped_vals.append(rd["condition_value"])
                 continue
@@ -917,13 +921,14 @@ def apply_template_route(ttype: str):
 
 @api.delete("/rules/duplicates")
 def remove_duplicate_rules():
-    """Remove duplicate rules (same condition_type + condition_value). Keeps the first."""
+    """Remove duplicate rules (same condition_type + condition_value + destination). Keeps the first."""
     all_rules = db_all("SELECT * FROM rules ORDER BY priority")
     seen: set = set()
     deleted = 0
     for rule in all_rules:
-        key = _cv_key(rule["condition_type"], rule["condition_value"])
+        key = _cv_key(rule["condition_type"], rule["condition_value"]) + (rule["destination_folder"].lower().strip(),)
         if key in seen:
+            db_run("DELETE FROM rule_conditions WHERE rule_id=?", (rule["id"],))
             db_run("DELETE FROM rules WHERE id=?", (rule["id"],))
             deleted += 1
         else:
@@ -941,24 +946,37 @@ class ImportRulesData(BaseModel):
 @api.post("/rules/import")
 def import_rules(data: ImportRulesData):
     if data.replace:
+        db_run("DELETE FROM rule_conditions")
         db_run("DELETE FROM rules")
-    existing_rules = db_all("SELECT condition_type, condition_value FROM rules")
-    existing_keys = {_cv_key(r["condition_type"], r["condition_value"]) for r in existing_rules}
+    existing_rules = db_all("SELECT condition_type, condition_value, destination_folder FROM rules")
+    existing_keys = {
+        _cv_key(r["condition_type"], r["condition_value"]) + '|' + r["destination_folder"].lower()
+        for r in existing_rules
+    }
     count = db_one("SELECT COUNT(*) AS c FROM rules")["c"]
     added, skipped = 0, 0
     for i, rule in enumerate(data.rules):
-        key = _cv_key(rule.get("condition_type",""), rule.get("condition_value",""))
+        ct  = rule.get("condition_type", "extension")
+        cv  = rule.get("condition_value", "").lower().strip()
+        dst = rule.get("destination_folder", "")
+        key = _cv_key(ct, cv) + '|' + dst.lower()
         if not data.replace and key in existing_keys:
             skipped += 1
             continue
         rid = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         db_run("""INSERT INTO rules (id,name,condition_type,condition_value,destination_folder,
-                   rename_template,priority,enabled,created_at) VALUES (?,?,?,?,?,?,?,?,?)""",
-               (rid, rule.get("name","Imported Rule"), rule.get("condition_type","extension"),
-                rule.get("condition_value","").lower().strip(),
-                rule.get("destination_folder",""), rule.get("rename_template","{date}_{originalname_cleaned}"),
-                count + i, 1 if rule.get("enabled", True) else 0, now))
+                   rename_template,priority,enabled,created_at,min_size_bytes,max_age_days)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+               (rid, rule.get("name","Imported Rule"), ct, cv, dst,
+                rule.get("rename_template","{date}_{originalname_cleaned}"),
+                count + i, 1 if rule.get("enabled", True) else 0, now,
+                rule.get("min_size_bytes"), rule.get("max_age_days")))
+        # Sync conditions — support extra_conditions from export
+        extra_raw = rule.get("extra_conditions", [])
+        class _EC:
+            def __init__(self, d): self.condition_type = d["condition_type"]; self.condition_value = d["condition_value"]
+        _sync_conditions(rid, ct, cv, [_EC(e) for e in extra_raw])
         existing_keys.add(key)
         added += 1
     return {"added": added, "skipped": skipped}
