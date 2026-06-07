@@ -21,11 +21,12 @@ export const organizeApi = {
   templatePreview: (filename, rename_template, destination_folder) =>
     api.post('/organize/template-preview', { filename, rename_template, destination_folder }).then(r => r.data),
   reconcile: () => api.post('/organize/reconcile').then(r => r.data),
+  organizeNow: () => api.post('/organize-now').then(r => r.data),
 };
 
 export const pendingApi = {
   getAll: (signal) => api.get('/pending', { signal }).then(r => r.data),
-  apply:  (ids) => api.post('/pending/apply', { ids }).then(r => r.data),
+  apply:  (ids, actions) => api.post('/pending/apply', { ids, actions }).then(r => r.data),
   skip:   (id)  => api.delete(`/pending/${id}`).then(r => r.data),
   clear:  ()    => api.delete('/pending').then(r => r.data),
 };
@@ -48,4 +49,11 @@ export const statsApi = {
 export const foldersApi = {
   getAll:   ()     => api.get('/folders').then(r => r.data),
   getFiles: (name) => api.get(`/folders/${encodeURIComponent(name)}`).then(r => r.data),
+};
+
+export const monitoredFoldersApi = {
+  getAll:  ()              => api.get('/monitored-folders').then(r => r.data),
+  add:     (path)          => api.post('/monitored-folders', { path }).then(r => r.data),
+  toggle:  (id, enabled)   => api.patch(`/monitored-folders/${id}`, { enabled }).then(r => r.data),
+  remove:  (id)            => api.delete(`/monitored-folders/${id}`).then(r => r.data),
 };

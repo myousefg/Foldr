@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { settingsApi } from '@/lib/api';
+import { settingsApi, monitoredFoldersApi } from '@/lib/api';
 import { useTheme } from '@/context/ThemeProvider';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
-import { Folder, ExternalLink, Sun, Moon, Monitor } from 'lucide-react';
+import { Folder, ExternalLink, Sun, Moon, Monitor, Plus, Trash2, Eye, EyeOff } from 'lucide-react';
 
 const isElectron = !!window.electronAPI;
 
@@ -41,18 +41,120 @@ function FolderInput({ label, description, value, onChange, placeholder }) {
   );
 }
 
+function MonitoredFoldersList({ folders, onAdd, onToggle, onRemove }) {
+  const [newPath, setNewPath] = useState('');
+  const [adding, setAdding] = useState(false);
+
+  const pickFolder = async () => {
+    if (!isElectron) return;
+    const f = await window.electronAPI.selectFolder({ title: 'Add Monitored Folder' });
+    if (f) setNewPath(f);
+  };
+
+  const handleAdd = async () => {
+    const trimmed = newPath.trim();
+    if (!trimmed) return;
+    setAdding(true);
+    try {
+      await onAdd(trimmed);
+      setNewPath('');
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <Label className="text-xs font-medium tracking-wide uppercase text-muted-foreground">
+        Monitored Folders
+      </Label>
+      <p className="text-xs text-muted-foreground">
+        Foldr watches all folders below simultaneously. Files from any folder are processed with the same rules.
+      </p>
+
+      {/* Existing folders list */}
+      {folders.length === 0 ? (
+        <p className="text-xs text-muted-foreground italic py-2">No folders added yet.</p>
+      ) : (
+        <div className="space-y-2">
+          {folders.map(f => (
+            <div key={f.id} className="flex items-center gap-2 p-2 rounded-lg border bg-muted/30">
+              <Folder className="w-4 h-4 shrink-0 text-muted-foreground" />
+              <span className={`font-mono text-xs flex-1 truncate ${!f.enabled ? 'opacity-40' : ''}`}>{f.path}</span>
+              <div className="flex items-center gap-1 shrink-0">
+                <Button
+                  variant="ghost" size="sm"
+                  onClick={() => onToggle(f.id, !f.enabled)}
+                  title={f.enabled ? 'Pause this folder' : 'Resume this folder'}
+                  className="h-7 w-7 p-0"
+                >
+                  {f.enabled
+                    ? <Eye className="w-3.5 h-3.5 text-muted-foreground" />
+                    : <EyeOff className="w-3.5 h-3.5 text-muted-foreground" />}
+                </Button>
+                {isElectron && (
+                  <Button
+                    variant="ghost" size="sm"
+                    onClick={() => window.electronAPI.openFolder(f.path)}
+                    title="Open in Explorer"
+                    className="h-7 w-7 p-0"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5 text-muted-foreground" />
+                  </Button>
+                )}
+                <Button
+                  variant="ghost" size="sm"
+                  onClick={() => onRemove(f.id)}
+                  title="Remove folder"
+                  className="h-7 w-7 p-0 hover:text-destructive"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Add new folder row */}
+      <div className="flex gap-2">
+        <Input
+          value={newPath}
+          onChange={e => setNewPath(e.target.value)}
+          placeholder="e.g. C:\Users\You\Desktop"
+          className="font-mono text-sm flex-1"
+          onKeyDown={e => e.key === 'Enter' && handleAdd()}
+        />
+        {isElectron && (
+          <Button variant="outline" size="sm" onClick={pickFolder} title="Browse">
+            <Folder className="w-4 h-4" />
+          </Button>
+        )}
+        <Button size="sm" onClick={handleAdd} disabled={adding || !newPath.trim()}>
+          <Plus className="w-4 h-4 mr-1" />
+          Add
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function Settings() {
-  const [cfg, setCfg]           = useState(null);
-  const [dirty, setDirty]       = useState({});
-  const [saving, setSaving]     = useState(false);
-  const [autoStart, setAutoStart] = useState(false);
-  const { theme, setTheme }     = useTheme();
+  const [cfg, setCfg]                     = useState(null);
+  const [dirty, setDirty]                 = useState({});
+  const [saving, setSaving]               = useState(false);
+  const [autoStart, setAutoStart]         = useState(false);
+  const [monFolders, setMonFolders]       = useState([]);
+  const { theme, setTheme }               = useTheme();
 
   const load = useCallback(async () => {
     try {
-      const s = await settingsApi.get();
+      const [s, mf] = await Promise.all([
+        settingsApi.get(),
+        monitoredFoldersApi.getAll(),
+      ]);
       setCfg(s);
-      // Load real auto-start state from Electron
+      setMonFolders(mf);
       if (isElectron) {
         const as = await window.electronAPI.getAutoStart();
         setAutoStart(as);
@@ -81,6 +183,33 @@ export default function Settings() {
     } catch { toast.error('Failed to set auto-start'); }
   };
 
+  const handleAddFolder = async (path) => {
+    try {
+      const added = await monitoredFoldersApi.add(path);
+      setMonFolders(prev => [...prev, added]);
+      toast.success(`Now monitoring: ${path}`);
+    } catch (err) {
+      const msg = err?.response?.data?.detail || 'Failed to add folder';
+      toast.error(msg);
+    }
+  };
+
+  const handleToggleFolder = async (id, enabled) => {
+    try {
+      const updated = await monitoredFoldersApi.toggle(id, enabled);
+      setMonFolders(prev => prev.map(f => f.id === id ? updated : f));
+      toast.success(enabled ? 'Folder monitoring resumed' : 'Folder monitoring paused');
+    } catch { toast.error('Failed to update folder'); }
+  };
+
+  const handleRemoveFolder = async (id) => {
+    try {
+      await monitoredFoldersApi.remove(id);
+      setMonFolders(prev => prev.filter(f => f.id !== id));
+      toast.success('Folder removed');
+    } catch { toast.error('Failed to remove folder'); }
+  };
+
   if (!cfg) return <div className="p-6 text-sm text-muted-foreground">Loading…</div>;
 
   return (
@@ -95,12 +224,11 @@ export default function Settings() {
       {/* Folders */}
       <section className="space-y-5">
         <h2 className="text-xs font-semibold tracking-[0.15em] uppercase text-muted-foreground">Folders</h2>
-        <FolderInput
-          label="Monitored Folder"
-          description="Foldr watches this folder for new files."
-          value={cfg.monitored_folder || ''}
-          onChange={v => set('monitored_folder', v)}
-          placeholder="e.g. C:\Users\You\Downloads"
+        <MonitoredFoldersList
+          folders={monFolders}
+          onAdd={handleAddFolder}
+          onToggle={handleToggleFolder}
+          onRemove={handleRemoveFolder}
         />
         <FolderInput
           label="Base Output Folder"
@@ -124,7 +252,7 @@ export default function Settings() {
         />
         <ToggleRow
           label="Monitoring enabled"
-          description="Pause monitoring without losing your folder or rule configuration."
+          description="Pause all folder monitoring without losing your configuration."
           checked={!!cfg.monitoring_enabled}
           onChange={v => set('monitoring_enabled', v)}
         />

@@ -2,7 +2,7 @@
 Foldr Native Backend
 FastAPI + SQLite + watchdog (real folder monitoring + file moves)
 """
-import os, re, shutil, sqlite3, logging, threading, traceback as _traceback, uuid, time
+import os, re, shutil, sqlite3, logging, threading, traceback as _traceback, uuid, time, hashlib
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
@@ -16,7 +16,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from watchdog.events import FileSystemEventHandler
-from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(os.environ.get("FOLDR_DATA", Path.home() / ".foldr"))
@@ -137,7 +137,8 @@ CREATE TABLE IF NOT EXISTS organized_files (
     id TEXT PRIMARY KEY,
     original_name TEXT, original_path TEXT,
     new_name TEXT, new_path TEXT,
-    folder TEXT, file_type TEXT, organized_at TEXT, rule_id TEXT
+    folder TEXT, file_type TEXT, organized_at TEXT, rule_id TEXT,
+    content_hash TEXT
 );
 CREATE TABLE IF NOT EXISTS activity_log (
     id TEXT PRIMARY KEY,
@@ -145,15 +146,36 @@ CREATE TABLE IF NOT EXISTS activity_log (
     new_name TEXT, new_path TEXT,
     destination_folder TEXT, rule_name TEXT, rule_id TEXT,
     timestamp TEXT, undone INTEGER DEFAULT 0,
-    file_type TEXT, file_id TEXT
+    file_type TEXT, file_id TEXT,
+    duplicate_action TEXT
 );
 CREATE TABLE IF NOT EXISTS pending_files (
     id TEXT PRIMARY KEY,
     original_path TEXT, proposed_path TEXT,
     proposed_name TEXT, destination_folder TEXT,
-    rule_id TEXT, rule_name TEXT, detected_at TEXT
+    rule_id TEXT, rule_name TEXT, detected_at TEXT,
+    content_hash TEXT, duplicate_of TEXT
+);
+CREATE TABLE IF NOT EXISTS monitored_folders (
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE,
+    enabled INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL
 );
         """)
+        c.commit()
+        # ── Migrations: add new columns to existing tables if missing ──────────
+        existing_cols = lambda tbl: {
+            r[1] for r in c.execute(f"PRAGMA table_info({tbl})").fetchall()
+        }
+        if 'content_hash'     not in existing_cols('organized_files'):
+            c.execute("ALTER TABLE organized_files ADD COLUMN content_hash TEXT")
+        if 'duplicate_action' not in existing_cols('activity_log'):
+            c.execute("ALTER TABLE activity_log ADD COLUMN duplicate_action TEXT")
+        if 'content_hash'     not in existing_cols('pending_files'):
+            c.execute("ALTER TABLE pending_files ADD COLUMN content_hash TEXT")
+        if 'duplicate_of'     not in existing_cols('pending_files'):
+            c.execute("ALTER TABLE pending_files ADD COLUMN duplicate_of TEXT")
         c.commit()
         if not c.execute("SELECT id FROM settings WHERE id='default'").fetchone():
             c.execute("""INSERT INTO settings
@@ -165,6 +187,7 @@ CREATE TABLE IF NOT EXISTS pending_files (
 
 # ── Name helpers ──────────────────────────────────────────────────────────────
 def clean_filename(name: str) -> str:
+    name = re.sub(r'^\d{4}-\d{2}-\d{2}[-_]', '', name)   # strip leading date prefix (YYYY-MM-DD)
     name = re.sub(r'\s*\(\d+\)\s*', '', name)
     name = re.sub(r'^Copy\s+of\s+', '', name, flags=re.IGNORECASE)
     name = re.sub(r'^(IMG|DSC|DCIM|VID|MVI|MOV|PICT|SANY|SDC)[-_]?\d+[-_]?', '', name, flags=re.IGNORECASE)
@@ -195,6 +218,57 @@ def apply_template(template: str, filename: str, seq: int, category: str, auto_c
     r = r.replace("{category}", category.lower().replace(' ', '-'))
     r = re.sub(r'[-_]{2,}', '_', r).strip('_-')
     return r + ext
+
+def sha256_file(path: str) -> Optional[str]:
+    """Return SHA-256 hex digest of a file, or None on error."""
+    try:
+        h = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+def find_duplicate_in_dest(src_path: str, dest_dir: str, src_hash: Optional[str] = None) -> Optional[str]:
+    """Check if any file in dest_dir has identical content to src_path.
+    Also checks organized_files DB for hash matches (catches race conditions).
+    Returns the path of the duplicate, or None if no duplicate found."""
+    if src_hash is None:
+        src_hash = sha256_file(src_path)
+    if not src_hash:
+        return None
+
+    # 1. Check organized_files DB first — catches files moved moments ago
+    row = db_one(
+        "SELECT new_path FROM organized_files WHERE content_hash=? LIMIT 1",
+        (src_hash,)
+    )
+    if row and row.get("new_path") and os.path.isfile(row["new_path"]):
+        return row["new_path"]
+
+    # 1b. Check pending_files — catches duplicates queued but not yet applied
+    pending_row = db_one(
+        "SELECT original_path FROM pending_files WHERE content_hash=? LIMIT 1",
+        (src_hash,)
+    )
+    if pending_row and pending_row.get("original_path") and os.path.isfile(pending_row["original_path"]):
+        return pending_row["original_path"]
+
+    # 2. Scan destination folder for size+hash match
+    try:
+        src_size = os.path.getsize(src_path)
+        for entry in os.scandir(dest_dir):
+            if not entry.is_file():
+                continue
+            if entry.stat().st_size != src_size:
+                continue
+            candidate_hash = sha256_file(entry.path)
+            if candidate_hash and candidate_hash == src_hash:
+                return entry.path
+    except (OSError, PermissionError):
+        pass
+    return None
 
 def unique_path(p: str) -> str:
     if not os.path.exists(p): return p
@@ -243,7 +317,7 @@ def next_seq(folder: str) -> int:
 _MOVE_MAX_RETRIES = 3
 _MOVE_RETRY_DELAY = 0.1  # seconds
 
-def do_move(src, dst, orig_name, new_name, folder, rule_id, rule_name):
+def do_move(src, dst, orig_name, new_name, folder, rule_id, rule_name, content_hash=None):
     src_path = Path(src).resolve()
     if not src_path.is_file():
         log.warning(f"do_move: source does not exist or is not a file: {src}")
@@ -282,9 +356,9 @@ def do_move(src, dst, orig_name, new_name, folder, rule_id, rule_name):
 
     try:
         db_run("""INSERT INTO organized_files
-            (id,original_name,original_path,new_name,new_path,folder,file_type,organized_at,rule_id)
-            VALUES (?,?,?,?,?,?,?,?,?)""",
-            (fid, orig_name, abs_src, new_name, final_dst, folder, ext, now, rule_id))
+            (id,original_name,original_path,new_name,new_path,folder,file_type,organized_at,rule_id,content_hash)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (fid, orig_name, abs_src, new_name, final_dst, folder, ext, now, rule_id, content_hash))
         db_run("""INSERT INTO activity_log
             (id,original_name,original_path,new_name,new_path,destination_folder,
              rule_name,rule_id,timestamp,undone,file_type,file_id)
@@ -308,13 +382,36 @@ def do_move(src, dst, orig_name, new_name, folder, rule_id, rule_name):
     return final_dst
 
 # ── Watchdog ──────────────────────────────────────────────────────────────────
+# Prefixes/suffixes that are temp/lock files — never process these
+_IGNORE_PREFIXES = ('~$', '.~', '._')
+_IGNORE_SUFFIXES = ('.tmp', '.temp', '.crdownload', '.part', '.download')
+
+def _is_temp_file(filename: str) -> bool:
+    """Return True for files that should never be organized (temp/lock files)."""
+    lname = filename.lower()
+    return (
+        any(filename.startswith(p) for p in _IGNORE_PREFIXES) or
+        any(lname.endswith(s) for s in _IGNORE_SUFFIXES)
+    )
+
 class FoldrHandler(FileSystemEventHandler):
     def on_created(self, event):
         if not event.is_directory:
             threading.Timer(0.8, self._handle, args=[event.src_path]).start()
+
     def on_moved(self, event):
-        if not event.is_directory:
-            threading.Timer(0.8, self._handle, args=[event.dest_path]).start()
+        if event.is_directory:
+            return
+        dest = str(Path(event.dest_path).resolve())
+        # Only process if dest is inside one of the monitored folders
+        in_monitored = any(
+            dest.startswith(str(Path(f).resolve()) + os.sep) or dest == str(Path(f).resolve())
+            for f in _watched_folders
+        )
+        if not in_monitored:
+            log.debug(f"on_moved: dest outside monitored folders, ignoring — {dest}")
+            return
+        threading.Timer(0.8, self._handle, args=[event.dest_path]).start()
 
     def _handle(self, path):
         if not os.path.isfile(path): return
@@ -334,10 +431,12 @@ class FoldrHandler(FileSystemEventHandler):
         settings = db_one("SELECT * FROM settings WHERE id='default'") or {}
         if not settings.get("monitoring_enabled", 1): return
         filename = os.path.basename(path)
+        if _is_temp_file(filename): return
         rule = match_rule(filename)
         if not rule: return
         dest_dir = resolve_dest(rule["destination_folder"], settings)
         seq = next_seq(rule["destination_folder"])
+        auto_clean = bool(settings.get("auto_clean_names", 1))
         rule_tmpl = rule.get("rename_template")
         if rule_tmpl is None:
             tmpl = settings.get("default_rename_template", "{date}_{originalname_cleaned}")
@@ -349,24 +448,45 @@ class FoldrHandler(FileSystemEventHandler):
         else:
             tmpl = rule_tmpl
 
-        auto_clean = bool(settings.get("auto_clean_names", 1))
-
         new_name = apply_template(tmpl, filename, seq, rule["destination_folder"], auto_clean=auto_clean)
         proposed = unique_path(os.path.join(dest_dir, new_name))
 
+        # ── Duplicate detection ────────────────────────────────────────────────
+        Path(dest_dir).mkdir(parents=True, exist_ok=True)
+        src_hash = sha256_file(path)
+        duplicate_of = find_duplicate_in_dest(path, dest_dir, src_hash)
+
         if settings.get("preview_before_apply", 1):
             db_run("""INSERT OR REPLACE INTO pending_files
-                (id,original_path,proposed_path,proposed_name,destination_folder,rule_id,rule_name,detected_at)
-                VALUES (?,?,?,?,?,?,?,?)""",
+                (id,original_path,proposed_path,proposed_name,destination_folder,
+                 rule_id,rule_name,detected_at,content_hash,duplicate_of)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (str(uuid.uuid4()), path, proposed, new_name,
                  rule["destination_folder"], rule["id"], rule["name"],
-                 datetime.now(timezone.utc).isoformat()))
-            log.info(f"Queued: {filename}")
+                 datetime.now(timezone.utc).isoformat(),
+                 src_hash, duplicate_of))
+            log.info(f"Queued: {filename}" + (f" [DUPLICATE of {duplicate_of}]" if duplicate_of else ""))
         else:
-            do_move(path, proposed, filename, new_name,
-                    rule["destination_folder"], rule["id"], rule["name"])
+            if duplicate_of:
+                # Auto-mode: skip duplicate, log to activity_log as skipped
+                ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else 'unknown'
+                now = datetime.now(timezone.utc).isoformat()
+                db_run("""INSERT INTO activity_log
+                    (id,original_name,original_path,new_name,new_path,destination_folder,
+                     rule_name,rule_id,timestamp,undone,file_type,file_id,duplicate_action)
+                    VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?)""",
+                    (str(uuid.uuid4()), filename, path,
+                     os.path.basename(duplicate_of), duplicate_of,
+                     rule["destination_folder"], rule["name"], rule["id"],
+                     now, ext, None, 'skipped_duplicate'))
+                log.info(f"Skipped duplicate: {filename} (identical to {duplicate_of})")
+            else:
+                do_move(path, proposed, filename, new_name,
+                        rule["destination_folder"], rule["id"], rule["name"],
+                        content_hash=src_hash)
 
-_observer: Optional[Observer] = None
+_observer: Optional[PollingObserver] = None
+_watched_folders: set = set()
 _obs_lock = threading.Lock()
 _pending_paths: set = set()
 _pending_lock = threading.Lock()
@@ -439,30 +559,55 @@ def start_reconciler():
 def stop_reconciler():
     _reconciler_stop.set()
 
-def start_watcher(folder):
-    global _observer
+def start_watcher(folders):
+    """Accept a single folder path (str) or a list of folder paths.
+    Schedules all valid folders on a single PollingObserver.
+    No-ops if the active folder set hasn't changed."""
+    global _observer, _watched_folders
+    if isinstance(folders, str):
+        folders = [folders]
+    folders = [f for f in folders if f and os.path.isdir(f)]
+    new_set = set(folders)
+
     with _obs_lock:
+        # Skip full restart if the watched set is identical
+        if new_set == _watched_folders and _observer and _observer.is_alive():
+            return
         if _observer:
             _observer.stop(); _observer.join()
-        if not folder or not os.path.isdir(folder): return
-        _observer = Observer()
-        _observer.schedule(FoldrHandler(), folder, recursive=False)
+        _observer = None
+        _watched_folders = set()
+        if not folders:
+            return
+        _observer = PollingObserver(timeout=2)
+        handler = FoldrHandler()
+        for folder in folders:
+            _observer.schedule(handler, folder, recursive=False)
+            log.info(f"Watching: {folder}")
         _observer.start()
-        log.info(f"Watching: {folder}")
+        _watched_folders = new_set
 
 def stop_watcher():
-    global _observer
+    global _observer, _watched_folders
     with _obs_lock:
         if _observer:
             _observer.stop(); _observer.join(); _observer = None
+        _watched_folders = set()
 
 # ── App lifespan ──────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     s = db_one("SELECT * FROM settings WHERE id='default'") or {}
-    if s.get("monitoring_enabled") and s.get("monitored_folder"):
-        start_watcher(s["monitored_folder"])
+    if s.get("monitoring_enabled"):
+        # Collect all enabled monitored folders
+        rows = db_all("SELECT path FROM monitored_folders WHERE enabled=1")
+        folders = [r["path"] for r in rows]
+        # Fallback: legacy single monitored_folder from settings
+        if not folders and s.get("monitored_folder"):
+            folders = [s["monitored_folder"]]
+        if folders:
+            start_watcher(folders)
     start_reconciler()
     yield
     stop_watcher()
@@ -507,11 +652,82 @@ def update_settings(data: SettingsUpdate):
     db_run(f"UPDATE settings SET {sets} WHERE id='default'", list(fields.values()))
     if "monitored_folder" in fields or "monitoring_enabled" in fields:
         s = db_one("SELECT * FROM settings WHERE id='default'") or {}
-        if s.get("monitoring_enabled") and s.get("monitored_folder"):
-            start_watcher(s["monitored_folder"])
+        if s.get("monitoring_enabled"):
+            rows = db_all("SELECT path FROM monitored_folders WHERE enabled=1")
+            folders = [r["path"] for r in rows]
+            if not folders and s.get("monitored_folder"):
+                folders = [s["monitored_folder"]]
+            if folders:
+                start_watcher(folders)
+            else:
+                stop_watcher()
         else:
             stop_watcher()
     return db_one("SELECT * FROM settings WHERE id='default'")
+
+# ── Monitored Folders ─────────────────────────────────────────────────────────
+class MonitoredFolderCreate(BaseModel):
+    path: str
+    enabled: bool = True
+
+class MonitoredFolderUpdate(BaseModel):
+    enabled: Optional[bool] = None
+
+def _restart_watcher_from_db():
+    """Restart the watcher using all enabled monitored_folders in the DB."""
+    s = db_one("SELECT * FROM settings WHERE id='default'") or {}
+    if not s.get("monitoring_enabled"):
+        stop_watcher()
+        return
+    rows = db_all("SELECT path FROM monitored_folders WHERE enabled=1")
+    folders = [r["path"] for r in rows]
+    if folders:
+        start_watcher(folders)
+    else:
+        stop_watcher()
+
+@api.get("/monitored-folders")
+def get_monitored_folders():
+    return db_all("SELECT * FROM monitored_folders ORDER BY created_at ASC")
+
+@api.post("/monitored-folders")
+def add_monitored_folder(data: MonitoredFolderCreate):
+    p = Path(data.path)
+    if ".." in p.parts:
+        raise HTTPException(400, "Path must not contain '..'.")
+    if not p.is_absolute():
+        raise HTTPException(400, "Path must be absolute.")
+    if not p.is_dir():
+        raise HTTPException(400, "Path does not exist or is not a directory.")
+    existing = db_one("SELECT id FROM monitored_folders WHERE path=?", (str(p),))
+    if existing:
+        raise HTTPException(409, "Folder is already being monitored.")
+    fid = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    db_run("INSERT INTO monitored_folders (id, path, enabled, created_at) VALUES (?,?,?,?)",
+           (fid, str(p), 1 if data.enabled else 0, now))
+    _restart_watcher_from_db()
+    return db_one("SELECT * FROM monitored_folders WHERE id=?", (fid,))
+
+@api.patch("/monitored-folders/{folder_id}")
+def update_monitored_folder(folder_id: str, data: MonitoredFolderUpdate):
+    row = db_one("SELECT * FROM monitored_folders WHERE id=?", (folder_id,))
+    if not row:
+        raise HTTPException(404, "Monitored folder not found.")
+    if data.enabled is not None:
+        db_run("UPDATE monitored_folders SET enabled=? WHERE id=?",
+               (1 if data.enabled else 0, folder_id))
+    _restart_watcher_from_db()
+    return db_one("SELECT * FROM monitored_folders WHERE id=?", (folder_id,))
+
+@api.delete("/monitored-folders/{folder_id}")
+def delete_monitored_folder(folder_id: str):
+    row = db_one("SELECT * FROM monitored_folders WHERE id=?", (folder_id,))
+    if not row:
+        raise HTTPException(404, "Monitored folder not found.")
+    db_run("DELETE FROM monitored_folders WHERE id=?", (folder_id,))
+    _restart_watcher_from_db()
+    return {"message": "removed"}
 
 # ── Rules ─────────────────────────────────────────────────────────────────────
 class RuleCreate(BaseModel):
@@ -725,8 +941,13 @@ def delete_rule(rule_id: str):
     db_run("DELETE FROM rules WHERE id=?", (rule_id,)); return {"message": "deleted"}
 
 # ── Pending ───────────────────────────────────────────────────────────────────
+class PendingAction(BaseModel):
+    id: str
+    duplicate_action: Optional[str] = None  # 'skip' | 'overwrite' | 'rename' | None
+
 class ApplyPending(BaseModel):
     ids: List[str]
+    actions: Optional[List[PendingAction]] = None  # per-item duplicate actions
 
 @api.get("/pending")
 def get_pending():
@@ -741,16 +962,22 @@ def get_pending():
 @api.post("/pending/apply")
 def apply_pending(data: ApplyPending):
     applied = 0
-    stale   = 0  # files that were deleted before the user hit Apply
+    stale   = 0
+    skipped = 0
+
+    # Build action map from per-item actions list
+    action_map = {}
+    if data.actions:
+        for a in data.actions:
+            action_map[a.id] = a.duplicate_action
 
     for pid in data.ids:
         row = db_one("SELECT * FROM pending_files WHERE id=?", (pid,))
         if not row:
-            continue  # already processed or skipped
+            continue
 
         if not Path(row["original_path"]).is_file():
             db_run("DELETE FROM pending_files WHERE id=?", (pid,))
-            log.info(f"apply_pending: stale record removed (file gone): {row['original_path']}")
             stale += 1
             continue
 
@@ -759,20 +986,49 @@ def apply_pending(data: ApplyPending):
             db_run("DELETE FROM pending_files WHERE id=?", (pid,))
             continue
 
+        dup_action = action_map.get(pid)
+        duplicate_of = row.get("duplicate_of")
+
+        # If this file is a duplicate and user chose skip (or no action chosen)
+        if duplicate_of and dup_action == 'skip':
+            db_run("DELETE FROM pending_files WHERE id=?", (pid,))
+            skipped += 1
+            continue
+
+        proposed = row["proposed_path"]
+
+        if duplicate_of and dup_action == 'overwrite':
+            # Remove the existing duplicate then move to its exact path
+            try:
+                os.remove(duplicate_of)
+                log.info(f"Overwrite: removed existing {duplicate_of}")
+            except OSError as e:
+                log.warning(f"Overwrite: could not remove {duplicate_of}: {e}")
+            proposed = duplicate_of  # move to exact same path
+
+        elif duplicate_of and dup_action == 'rename':
+            # Use the already-unique proposed_path (has _001 suffix from unique_path)
+            proposed = row["proposed_path"]
+
+        elif duplicate_of and not dup_action:
+            # No action provided for a duplicate — default to rename
+            proposed = row["proposed_path"]
+
         result = do_move(
             row["original_path"],
-            row["proposed_path"],
+            proposed,
             os.path.basename(row["original_path"]),
             row["proposed_name"],
             row["destination_folder"],
             row["rule_id"],
             row["rule_name"],
+            content_hash=row.get("content_hash"),
         )
         db_run("DELETE FROM pending_files WHERE id=?", (pid,))
         if result:
             applied += 1
 
-    return {"applied": applied, "stale": stale}
+    return {"applied": applied, "stale": stale, "skipped": skipped}
 
 @api.delete("/pending/{pid}")
 def skip_pending(pid: str):
@@ -916,6 +1172,132 @@ def trigger_reconcile():
     Called by the Dashboard on mount so the Folders section is always current."""
     _reconcile_once()
     return {"message": "reconciled"}
+
+# ── Organize Now ──────────────────────────────────────────────────────────────
+@api.post("/organize-now")
+def organize_now():
+    """Scan all enabled monitored folders and apply active rules to every existing file.
+    Respects preview_before_apply: queues to pending_files if ON, moves directly if OFF.
+    Skips files already present in organized_files (already moved by Foldr).
+    Returns a summary: scanned, matched, moved/queued, skipped."""
+    settings = db_one("SELECT * FROM settings WHERE id='default'") or {}
+    auto_clean = bool(settings.get("auto_clean_names", 1))
+    preview = bool(settings.get("preview_before_apply", 1))
+
+    # Collect all enabled monitored folders
+    rows = db_all("SELECT path FROM monitored_folders WHERE enabled=1")
+    folders = [r["path"] for r in rows]
+    # Fallback to legacy single folder
+    if not folders and settings.get("monitored_folder"):
+        folders = [settings["monitored_folder"]]
+
+    if not folders:
+        raise HTTPException(400, "No monitored folders configured.")
+
+    # Build set of already-organized original paths to skip re-processing
+    already_organized = {
+        r["original_path"]
+        for r in db_all("SELECT original_path FROM organized_files")
+        if r["original_path"]
+    }
+    # Also skip anything already in pending queue
+    already_pending = {
+        r["original_path"]
+        for r in db_all("SELECT original_path FROM pending_files")
+        if r["original_path"]
+    }
+
+    scanned = 0
+    matched = 0
+    actioned = 0  # moved or queued
+    skipped = 0
+    destination_folders: set = set()
+
+    now_ts = datetime.now(timezone.utc).isoformat()
+
+    for folder in folders:
+        if not os.path.isdir(folder):
+            continue
+        try:
+            entries = os.listdir(folder)
+        except PermissionError:
+            log.warning(f"organize-now: permission denied — {folder}")
+            continue
+
+        for filename in entries:
+            full_path = os.path.join(folder, filename)
+            if not os.path.isfile(full_path):
+                continue
+            if _is_temp_file(filename):
+                continue
+            scanned += 1
+
+            abs_path = str(Path(full_path).resolve())
+
+            if abs_path in already_organized or abs_path in already_pending:
+                skipped += 1
+                continue
+
+            rule = match_rule(filename)
+            if not rule:
+                continue
+            matched += 1
+
+            rule_tmpl = rule.get("rename_template")
+            if rule_tmpl is None:
+                tmpl = settings.get("default_rename_template", "{date}_{originalname_cleaned}")
+                if not auto_clean:
+                    tmpl = tmpl.replace("{originalname_cleaned}", "{originalname}") \
+                               .replace("{cleaned_name}", "{originalname}")
+            elif rule_tmpl == "":
+                tmpl = "{originalname_cleaned}" if auto_clean else "{originalname}"
+            else:
+                tmpl = rule_tmpl
+
+            dest_dir = resolve_dest(rule["destination_folder"], settings)
+            seq = next_seq(rule["destination_folder"])
+            new_name = apply_template(tmpl, filename, seq, rule["destination_folder"], auto_clean=auto_clean)
+            proposed = unique_path(os.path.join(dest_dir, new_name))
+
+            if preview:
+                # Queue to pending_files for user review
+                existing_pending = db_one(
+                    "SELECT id FROM pending_files WHERE original_path=?", (abs_path,)
+                )
+                if existing_pending:
+                    skipped += 1
+                    continue
+                db_run(
+                    """INSERT OR REPLACE INTO pending_files
+                       (id, original_path, proposed_path, proposed_name,
+                        destination_folder, rule_id, rule_name, detected_at)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (str(uuid.uuid4()), abs_path, proposed, new_name,
+                     rule["destination_folder"], rule["id"], rule["name"], now_ts)
+                )
+                already_pending.add(abs_path)
+                actioned += 1
+                destination_folders.add(rule["destination_folder"])
+            else:
+                result = do_move(
+                    abs_path, proposed, filename, new_name,
+                    rule["destination_folder"], rule["id"], rule["name"]
+                )
+                if result:
+                    actioned += 1
+                    already_organized.add(abs_path)
+                    destination_folders.add(rule["destination_folder"])
+
+    return {
+        "scanned": scanned,
+        "matched": matched,
+        "actioned": actioned,
+        "skipped": skipped,
+        "queued": actioned if preview else 0,
+        "moved": actioned if not preview else 0,
+        "folders": sorted(destination_folders),
+        "preview_mode": preview,
+    }
 
 @api.get("/stats")
 def get_stats():

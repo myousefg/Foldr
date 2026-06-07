@@ -8,6 +8,22 @@ const path   = require('path');
 const fs     = require('fs');
 const http   = require('http');
 
+// ── Single Instance Lock ───────────────────────────────────────────────────────
+// If another instance is already running, focus it and exit immediately.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // Called in the *first* instance when a second one tries to launch.
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
 // Remove native menu bar
 app.on('ready', () => Menu.setApplicationMenu(null));
 
