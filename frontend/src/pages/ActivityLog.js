@@ -7,7 +7,10 @@ import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 import { ArrowRight, RotateCcw, Trash2, RefreshCw, ExternalLink, Search, X, Bell, AlertTriangle } from 'lucide-react';
 
-const isElectron = !!window.electronAPI;
+import { isElectron, openFolder } from '@/lib/electron';
+
+/** Shared className for the native <select> filter controls. */
+const SELECT_CLS = 'h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring';
 
 export default function ActivityLog() {
   const [log, setLog]               = useState([]);
@@ -90,13 +93,6 @@ export default function ActivityLog() {
     setLoading(false);
   };
 
-  const openFolder = async (path) => {
-    if (!isElectron || !path) return;
-    const sep = path.includes('\\') ? '\\' : '/';
-    const dir = path.substring(0, path.lastIndexOf(sep));
-    if (dir) await window.electronAPI.openFolder(dir);
-  };
-
   const undoBlocked = pendingCount > 0;
   const undoTooltip = undoBlocked
     ? `Please review files first before undo (${pendingCount} file${pendingCount !== 1 ? 's' : ''} pending)`
@@ -165,7 +161,7 @@ export default function ActivityLog() {
           <select
             value={filterStatus}
             onChange={e => setFilterStatus(e.target.value)}
-            className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            className={SELECT_CLS}
           >
             <option value="ALL">All status</option>
             <option value="ACTIVE">Moved</option>
@@ -177,7 +173,7 @@ export default function ActivityLog() {
           <select
             value={filterRule}
             onChange={e => setFilterRule(e.target.value)}
-            className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            className={SELECT_CLS}
           >
             {ruleNames.map(name => (
               <option key={name} value={name}>{name === 'ALL' ? 'All rules' : name}</option>
