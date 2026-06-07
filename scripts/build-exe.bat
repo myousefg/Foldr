@@ -11,7 +11,7 @@ setlocal EnableDelayedExpansion
 ::  3. Update filevers/prodvers in backend\version_info.txt to match
 :: ============================================================
 
-set APP_VERSION=1.1.0
+set APP_VERSION=1.2.0
 set INSTALLER_NAME=Foldr-Setup-%APP_VERSION%.exe
 
 pushd "%~dp0.."
