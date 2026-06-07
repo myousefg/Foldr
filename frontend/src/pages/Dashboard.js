@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { toast } from 'sonner';
 import { FileText, ListFilter, FolderOpen, Clock, ArrowRight, Check, X, Bell, RefreshCw, ExternalLink, Folder, Plus, Eye, EyeOff, Zap, Loader2, AlertTriangle } from 'lucide-react';
 
-const isElectron = !!window.electronAPI;
+import { isElectron, openFolder } from '@/lib/electron';
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -97,10 +97,6 @@ export default function Dashboard() {
       setSettings(updated);
       toast.success(`Monitoring ${updated.monitoring_enabled ? 'enabled' : 'disabled'}`);
     } catch { toast.error('Failed to toggle monitoring'); }
-  };
-
-  const openFolder = async (path) => {
-    if (isElectron && path) await window.electronAPI.openFolder(path);
   };
 
   const organizeNow = async () => {

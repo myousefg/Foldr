@@ -241,6 +241,36 @@ def apply_template(template: str, filename: str, seq: int, category: str, auto_c
     r = re.sub(r'[-_]{2,}', '_', r).strip('_-')
     return r + ext
 
+def resolve_template(rule: dict, settings: dict) -> str:
+    """Return the effective rename template for a rule, honouring auto_clean setting.
+
+    Centralises the 3-way logic that was previously copy-pasted across
+    _process(), preview_org(), and organize_now():
+      - rule has explicit template   → use it as-is
+      - rule template is ''          → use cleaned / original name only
+      - rule template is None        → fall back to the settings default
+    """
+    auto_clean = bool(settings.get("auto_clean_names", 1))
+    rule_tmpl = rule.get("rename_template")
+    if rule_tmpl is None:
+        tmpl = settings.get("default_rename_template", "{date}_{originalname_cleaned}")
+        if not auto_clean:
+            tmpl = (tmpl
+                    .replace("{originalname_cleaned}", "{originalname}")
+                    .replace("{cleaned_name}", "{originalname}"))
+    elif rule_tmpl == "":
+        tmpl = "{originalname_cleaned}" if auto_clean else "{originalname}"
+    else:
+        tmpl = rule_tmpl
+    return tmpl
+
+def db_count(table: str, where: str = "", params=()) -> int:
+    """Return a COUNT(*) from *table* with an optional WHERE clause."""
+    sql = f"SELECT COUNT(*) AS c FROM {table}"
+    if where:
+        sql += f" WHERE {where}"
+    return (db_one(sql, params) or {}).get("c", 0)
+
 def sha256_file(path: str) -> Optional[str]:
     """Return SHA-256 hex digest of a file, or None on error."""
     try:
@@ -365,8 +395,7 @@ def match_rule(filename: str, file_path: Optional[str] = None) -> Optional[dict]
     return None
 
 def next_seq(folder: str) -> int:
-    r = db_one("SELECT COUNT(*) AS c FROM organized_files WHERE folder=?", (folder,))
-    return (r["c"] if r else 0) + 1
+    return db_count("organized_files", "folder=?", (folder,)) + 1
 
 # ── Move helper ───────────────────────────────────────────────────────────────
 _MOVE_MAX_RETRIES = 3
@@ -492,17 +521,7 @@ class FoldrHandler(FileSystemEventHandler):
         dest_dir = resolve_dest(rule["destination_folder"], settings)
         seq = next_seq(rule["destination_folder"])
         auto_clean = bool(settings.get("auto_clean_names", 1))
-        rule_tmpl = rule.get("rename_template")
-        if rule_tmpl is None:
-            tmpl = settings.get("default_rename_template", "{date}_{originalname_cleaned}")
-            if not auto_clean:
-                tmpl = tmpl.replace("{originalname_cleaned}", "{originalname}") \
-                           .replace("{cleaned_name}", "{originalname}")
-        elif rule_tmpl == "":
-            tmpl = "{originalname_cleaned}" if auto_clean else "{originalname}"
-        else:
-            tmpl = rule_tmpl
-
+        tmpl = resolve_template(rule, settings)
         new_name = apply_template(tmpl, filename, seq, rule["destination_folder"], auto_clean=auto_clean)
         proposed = unique_path(os.path.join(dest_dir, new_name))
 
@@ -897,7 +916,7 @@ def apply_template_route(ttype: str):
             _cv_key(r["condition_type"], r["condition_value"]) + (r["destination_folder"].lower().strip(),)
             for r in existing_rules
         }
-        count = db_one("SELECT COUNT(*) AS c FROM rules")["c"]
+        count = db_count("rules")
         added_rules, skipped_vals = [], []
         for i, rd in enumerate(RULE_TEMPLATES[ttype]):
             key = _cv_key(rd["condition_type"], rd["condition_value"]) + (rd["destination_folder"].lower().strip(),)
@@ -953,7 +972,7 @@ def import_rules(data: ImportRulesData):
         _cv_key(r["condition_type"], r["condition_value"]) + '|' + r["destination_folder"].lower()
         for r in existing_rules
     }
-    count = db_one("SELECT COUNT(*) AS c FROM rules")["c"]
+    count = db_count("rules")
     added, skipped = 0, 0
     for i, rule in enumerate(data.rules):
         ct  = rule.get("condition_type", "extension")
@@ -1011,7 +1030,7 @@ def get_rules():
 @api.post("/rules")
 def create_rule(rule: RuleCreate):
     _validate_rule_fields(rule.name, rule.condition_type, rule.destination_folder)
-    count = db_one("SELECT COUNT(*) AS c FROM rules")["c"]
+    count = db_count("rules")
     did = str(uuid.uuid4()); now = datetime.now(timezone.utc).isoformat()
     db_run("""INSERT INTO rules (id,name,condition_type,condition_value,destination_folder,
                rename_template,priority,enabled,created_at,min_size_bytes,max_age_days) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
@@ -1172,16 +1191,7 @@ def preview_org(data: OrganizeRequest):
     for fn in data.filenames:
         rule = match_rule(fn)
         if rule:
-            rule_tmpl = rule.get("rename_template")
-            if rule_tmpl is None:
-                tmpl = settings.get("default_rename_template", "{date}_{originalname_cleaned}")
-                if not auto_clean:
-                    tmpl = tmpl.replace("{originalname_cleaned}", "{originalname}") \
-                               .replace("{cleaned_name}", "{originalname}")
-            elif rule_tmpl == "":
-                tmpl = "{originalname_cleaned}" if auto_clean else "{originalname}"
-            else:
-                tmpl = rule_tmpl
+            tmpl = resolve_template(rule, settings)
             new_name = apply_template(tmpl, fn, next_seq(rule["destination_folder"]), rule["destination_folder"], auto_clean=auto_clean)
             dest = resolve_dest(rule["destination_folder"], settings)
             out.append({"original_name": fn, "new_name": new_name,
@@ -1229,7 +1239,7 @@ def undo_activity(aid: str):
     if not act: raise HTTPException(404, "Not found")
     if act.get("undone"): raise HTTPException(400, "Already undone")
 
-    pending_count = db_one("SELECT COUNT(*) AS c FROM pending_files")["c"]
+    pending_count = db_count("pending_files")
     if pending_count > 0:
         raise HTTPException(
             409,
@@ -1365,17 +1375,7 @@ def organize_now():
                 continue
             matched += 1
 
-            rule_tmpl = rule.get("rename_template")
-            if rule_tmpl is None:
-                tmpl = settings.get("default_rename_template", "{date}_{originalname_cleaned}")
-                if not auto_clean:
-                    tmpl = tmpl.replace("{originalname_cleaned}", "{originalname}") \
-                               .replace("{cleaned_name}", "{originalname}")
-            elif rule_tmpl == "":
-                tmpl = "{originalname_cleaned}" if auto_clean else "{originalname}"
-            else:
-                tmpl = rule_tmpl
-
+            tmpl = resolve_template(rule, settings)
             dest_dir = resolve_dest(rule["destination_folder"], settings)
             seq = next_seq(rule["destination_folder"])
             new_name = apply_template(tmpl, filename, seq, rule["destination_folder"], auto_clean=auto_clean)
@@ -1428,12 +1428,12 @@ def get_stats():
     week  = (now - timedelta(days=7)).isoformat()
     settings = db_one("SELECT * FROM settings WHERE id='default'") or {}
     return {
-        "total_files":    db_one("SELECT COUNT(*) AS c FROM organized_files")["c"],
-        "files_today":    db_one("SELECT COUNT(*) AS c FROM organized_files WHERE organized_at>=?", (today,))["c"],
-        "files_week":     db_one("SELECT COUNT(*) AS c FROM organized_files WHERE organized_at>=?", (week,))["c"],
-        "active_rules":   db_one("SELECT COUNT(*) AS c FROM rules WHERE enabled=1")["c"],
-        "total_rules":    db_one("SELECT COUNT(*) AS c FROM rules")["c"],
-        "pending_count":  db_one("SELECT COUNT(*) AS c FROM pending_files")["c"],
+        "total_files":    db_count("organized_files"),
+        "files_today":    db_count("organized_files", "organized_at>=?", (today,)),
+        "files_week":     db_count("organized_files", "organized_at>=?", (week,)),
+        "active_rules":   db_count("rules", "enabled=1"),
+        "total_rules":    db_count("rules"),
+        "pending_count":  db_count("pending_files"),
         "type_breakdown": db_all("SELECT file_type AS type,COUNT(*) AS count FROM organized_files GROUP BY file_type ORDER BY count DESC LIMIT 10"),
         "folder_breakdown": [{
             "folder": r["folder"],
