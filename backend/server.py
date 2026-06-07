@@ -331,9 +331,20 @@ class FoldrHandler(FileSystemEventHandler):
     def on_created(self, event):
         if not event.is_directory:
             threading.Timer(0.8, self._handle, args=[event.src_path]).start()
+
     def on_moved(self, event):
-        if not event.is_directory:
-            threading.Timer(0.8, self._handle, args=[event.dest_path]).start()
+        if event.is_directory:
+            return
+        dest = str(Path(event.dest_path).resolve())
+        # Only process if dest is inside one of the monitored folders
+        in_monitored = any(
+            dest.startswith(str(Path(f).resolve()) + os.sep) or dest == str(Path(f).resolve())
+            for f in _watched_folders
+        )
+        if not in_monitored:
+            log.debug(f"on_moved: dest outside monitored folders, ignoring — {dest}")
+            return
+        threading.Timer(0.8, self._handle, args=[event.dest_path]).start()
 
     def _handle(self, path):
         if not os.path.isfile(path): return
