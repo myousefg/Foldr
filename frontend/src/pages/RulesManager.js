@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from 'sonner';
-import { Plus, Pencil, Trash2, ChevronUp, ChevronDown, GraduationCap, Briefcase, Code, Folder, Camera, Palette, BookOpen, Upload, Download, AlertTriangle } from 'lucide-react';
+import { Plus, Pencil, Trash2, ChevronUp, ChevronDown, GraduationCap, Briefcase, Code, Folder, Camera, Palette, BookOpen, Upload, Download, AlertTriangle, X } from 'lucide-react';
 
 const isElectron = !!window.electronAPI;
 
@@ -23,8 +23,10 @@ const templateMeta = {
   writer:     { label: 'Writer',       icon: BookOpen,      desc: 'Docs, PDFs, Notes, Drafts, Finals'        },
 };
 
+const defaultCondition = { condition_type: 'extension', condition_value: '' };
 const defaultForm = {
-  name: '', condition_type: 'extension', condition_value: '',
+  name: '',
+  conditions: [{ condition_type: 'extension', condition_value: '' }],
   destination_folder: '', rename_template: '{date}_{originalname_cleaned}', enabled: true,
 };
 
@@ -51,10 +53,11 @@ export default function RulesManager() {
   useEffect(() => {
     if (!form.rename_template) { setPreview(''); setPreviewLoading(false); return; }
 
-    // Build a representative sample filename that exercises the condition
-    const sampleFilename = form.condition_type === 'extension'
-      ? `IMG_9283 (1)${form.condition_value || '.pdf'}`
-      : `${form.condition_value || 'invoice'}_draft.pdf`;
+    // Build a representative sample filename that exercises the first condition
+    const primaryCondition = form.conditions[0] || { condition_type: 'extension', condition_value: '.pdf' };
+    const sampleFilename = primaryCondition.condition_type === 'extension'
+      ? `IMG_9283 (1)${primaryCondition.condition_value || '.pdf'}`
+      : `${primaryCondition.condition_value || 'invoice'}_draft.pdf`;
 
     // Cancel any in-flight request before firing a new one
     if (previewAbort.current) previewAbort.current.abort();
@@ -93,13 +96,21 @@ export default function RulesManager() {
       .finally(() => { if (!controller.signal.aborted) setPreviewLoading(false); });
 
     return () => controller.abort();
-  }, [form.rename_template, form.condition_type, form.condition_value, form.destination_folder]);
+  }, [form.rename_template, form.conditions, form.destination_folder]);
 
   const openAdd  = () => { setEditingRule(null); setForm(defaultForm); setShowDialog(true); };
   const openEdit = r => {
     setEditingRule(r);
-    setForm({ name: r.name, condition_type: r.condition_type, condition_value: r.condition_value,
-              destination_folder: r.destination_folder, rename_template: r.rename_template || '', enabled: r.enabled });
+    const conditions = r.conditions && r.conditions.length > 0
+      ? r.conditions
+      : [{ condition_type: r.condition_type, condition_value: r.condition_value }];
+    setForm({
+      name: r.name,
+      conditions,
+      destination_folder: r.destination_folder,
+      rename_template: r.rename_template || '',
+      enabled: r.enabled,
+    });
     setShowDialog(true);
   };
 
@@ -110,13 +121,24 @@ export default function RulesManager() {
   };
 
   const handleSave = async () => {
-    if (!form.name || !form.condition_value || !form.destination_folder) {
+    const hasEmptyCondition = form.conditions.some(c => !c.condition_value.trim());
+    if (!form.name || hasEmptyCondition || !form.destination_folder) {
       toast.error('Fill in all required fields'); return;
     }
+    const payload = {
+      name: form.name,
+      conditions: form.conditions,
+      // Keep legacy fields in sync with primary condition for older backend versions
+      condition_type: form.conditions[0].condition_type,
+      condition_value: form.conditions[0].condition_value,
+      destination_folder: form.destination_folder,
+      rename_template: form.rename_template,
+      enabled: form.enabled,
+    };
     setSaving(true);
     try {
-      if (editingRule) { await rulesApi.update(editingRule.id, form); toast.success('Rule updated'); }
-      else             { await rulesApi.create(form);                 toast.success('Rule created'); }
+      if (editingRule) { await rulesApi.update(editingRule.id, payload); toast.success('Rule updated'); }
+      else             { await rulesApi.create(payload);                  toast.success('Rule created'); }
       setShowDialog(false); fetchRules();
     } catch { toast.error('Failed to save rule'); }
     setSaving(false);
@@ -241,7 +263,12 @@ export default function RulesManager() {
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-semibold truncate">{rule.name}</p>
                 <p className="text-xs text-muted-foreground font-mono mt-0.5 truncate">
-                  {rule.condition_type === 'extension' ? `ext = ${rule.condition_value}` : `name ∋ "${rule.condition_value}"`}
+                  {(rule.conditions && rule.conditions.length > 0 ? rule.conditions : [{condition_type: rule.condition_type, condition_value: rule.condition_value}])
+                    .map((c, i) => (
+                      <span key={i}>{i > 0 && <span className="opacity-50"> AND </span>}
+                        {c.condition_type === 'extension' ? `ext=${c.condition_value}` : `∋"${c.condition_value}"`}
+                      </span>
+                    ))}
                   {' → '}<span className="text-foreground">{rule.destination_folder}</span>
                 </p>
               </div>
@@ -313,20 +340,62 @@ export default function RulesManager() {
                 <Input value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))}
                   placeholder="PDFs to Documents" className="text-sm" />
               </Field>
-              <Field label="Condition Type">
-                <Select value={form.condition_type} onValueChange={v => setForm(p => ({ ...p, condition_type: v }))}>
-                  <SelectTrigger className="text-sm"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="extension">File Extension</SelectItem>
-                    <SelectItem value="keyword">Filename Keyword</SelectItem>
-                  </SelectContent>
-                </Select>
-              </Field>
-              <Field label={form.condition_type === 'extension' ? 'Extension' : 'Keyword'}>
-                <Input value={form.condition_value}
-                  onChange={e => setForm(p => ({ ...p, condition_value: e.target.value }))}
-                  placeholder={form.condition_type === 'extension' ? '.pdf' : 'invoice'}
-                  className="font-mono text-sm" />
+              <Field label="Conditions">
+                <div className="space-y-2">
+                  {form.conditions.map((cond, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      {idx > 0 && (
+                        <span className="text-[10px] font-bold text-muted-foreground shrink-0 w-8 text-center">AND</span>
+                      )}
+                      {idx === 0 && <div className="w-8" />}
+                      <Select
+                        value={cond.condition_type}
+                        onValueChange={v => setForm(p => {
+                          const conditions = [...p.conditions];
+                          conditions[idx] = { ...conditions[idx], condition_type: v };
+                          return { ...p, conditions };
+                        })}
+                      >
+                        <SelectTrigger className="text-sm w-36 shrink-0"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="extension">Extension</SelectItem>
+                          <SelectItem value="keyword">Keyword</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Input
+                        value={cond.condition_value}
+                        onChange={e => setForm(p => {
+                          const conditions = [...p.conditions];
+                          conditions[idx] = { ...conditions[idx], condition_value: e.target.value };
+                          return { ...p, conditions };
+                        })}
+                        placeholder={cond.condition_type === 'extension' ? '.pdf' : 'invoice'}
+                        className="font-mono text-sm flex-1"
+                      />
+                      {form.conditions.length > 1 && (
+                        <button
+                          onClick={() => setForm(p => ({
+                            ...p,
+                            conditions: p.conditions.filter((_, i) => i !== idx),
+                          }))}
+                          className="text-muted-foreground hover:text-destructive p-1 rounded transition-colors shrink-0"
+                          title="Remove condition"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => setForm(p => ({
+                      ...p,
+                      conditions: [...p.conditions, { condition_type: 'extension', condition_value: '' }],
+                    }))}
+                    className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground mt-1 transition-colors"
+                  >
+                    <Plus className="w-3 h-3" /> Add Condition
+                  </button>
+                </div>
               </Field>
               <Field label="Destination Folder">
                 <div className="flex gap-2">
