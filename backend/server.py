@@ -131,7 +131,9 @@ CREATE TABLE IF NOT EXISTS rules (
     rename_template TEXT DEFAULT '',
     priority INTEGER DEFAULT 0,
     enabled INTEGER DEFAULT 1,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    min_size_bytes INTEGER DEFAULT NULL,
+    max_age_days INTEGER DEFAULT NULL
 );
 CREATE TABLE IF NOT EXISTS organized_files (
     id TEXT PRIMARY KEY,
@@ -184,6 +186,10 @@ CREATE TABLE IF NOT EXISTS rule_conditions (
             c.execute("ALTER TABLE pending_files ADD COLUMN content_hash TEXT")
         if 'duplicate_of'     not in existing_cols('pending_files'):
             c.execute("ALTER TABLE pending_files ADD COLUMN duplicate_of TEXT")
+        if 'min_size_bytes'   not in existing_cols('rules'):
+            c.execute("ALTER TABLE rules ADD COLUMN min_size_bytes INTEGER DEFAULT NULL")
+        if 'max_age_days'     not in existing_cols('rules'):
+            c.execute("ALTER TABLE rules ADD COLUMN max_age_days INTEGER DEFAULT NULL")
         # Migrate existing single-condition rules into rule_conditions table
         existing_rc = {r[0] for r in c.execute("SELECT DISTINCT rule_id FROM rule_conditions").fetchall()}
         for row in c.execute("SELECT id, condition_type, condition_value FROM rules").fetchall():
@@ -321,7 +327,7 @@ def _condition_matches(condition_type: str, condition_value: str, filename: str,
         return cv in nl
     return False
 
-def match_rule(filename: str) -> Optional[dict]:
+def match_rule(filename: str, file_path: Optional[str] = None) -> Optional[dict]:
     rules = db_all("SELECT * FROM rules WHERE enabled=1 ORDER BY priority")
     ext = ('.' + filename.rsplit('.', 1)[1].lower()) if '.' in filename else ''
     nl = filename.lower()
@@ -331,13 +337,31 @@ def match_rule(filename: str) -> Optional[dict]:
             (rule["id"],)
         )
         if not conditions:
-            # Fallback: use legacy inline condition (backward compat)
-            if _condition_matches(rule["condition_type"], rule["condition_value"], filename, ext, nl):
-                return rule
+            if not _condition_matches(rule["condition_type"], rule["condition_value"], filename, ext, nl):
+                continue
         else:
-            # AND logic: ALL conditions must match
-            if all(_condition_matches(c["condition_type"], c["condition_value"], filename, ext, nl) for c in conditions):
-                return rule
+            if not all(_condition_matches(c["condition_type"], c["condition_value"], filename, ext, nl) for c in conditions):
+                continue
+
+        # ── Size / Age filters (optional) ─────────────────────────────────────
+        if file_path and os.path.isfile(file_path):
+            min_size = rule.get("min_size_bytes")
+            max_age  = rule.get("max_age_days")
+            if min_size is not None:
+                try:
+                    if os.path.getsize(file_path) < min_size:
+                        continue
+                except OSError:
+                    continue
+            if max_age is not None:
+                try:
+                    age_days = (datetime.now() - datetime.fromtimestamp(os.path.getmtime(file_path))).days
+                    if age_days > max_age:
+                        continue
+                except OSError:
+                    continue
+
+        return rule
     return None
 
 def next_seq(folder: str) -> int:
@@ -463,10 +487,9 @@ class FoldrHandler(FileSystemEventHandler):
         if not settings.get("monitoring_enabled", 1): return
         filename = os.path.basename(path)
         if _is_temp_file(filename): return
-        rule = match_rule(filename)
+        rule = match_rule(filename, file_path=path)
         if not rule: return
         dest_dir = resolve_dest(rule["destination_folder"], settings)
-        seq = next_seq(rule["destination_folder"])
         auto_clean = bool(settings.get("auto_clean_names", 1))
         rule_tmpl = rule.get("rename_template")
         if rule_tmpl is None:
@@ -769,12 +792,16 @@ class RuleCreate(BaseModel):
     name: str; condition_type: str; condition_value: str
     destination_folder: str; rename_template: str = ""; enabled: bool = True
     extra_conditions: List[ConditionItem] = []
+    min_size_bytes: Optional[int] = None
+    max_age_days: Optional[int] = None
 
 class RuleUpdate(BaseModel):
     name: Optional[str] = None; condition_type: Optional[str] = None
     condition_value: Optional[str] = None; destination_folder: Optional[str] = None
     rename_template: Optional[str] = None; enabled: Optional[bool] = None
     extra_conditions: Optional[List[ConditionItem]] = None
+    min_size_bytes: Optional[int] = None
+    max_age_days: Optional[int] = None
 
 class RuleReorder(BaseModel):
     rule_ids: List[str]
@@ -969,9 +996,10 @@ def create_rule(rule: RuleCreate):
     count = db_one("SELECT COUNT(*) AS c FROM rules")["c"]
     did = str(uuid.uuid4()); now = datetime.now(timezone.utc).isoformat()
     db_run("""INSERT INTO rules (id,name,condition_type,condition_value,destination_folder,
-               rename_template,priority,enabled,created_at) VALUES (?,?,?,?,?,?,?,?,?)""",
+               rename_template,priority,enabled,created_at,min_size_bytes,max_age_days) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
            (did,rule.name,rule.condition_type,rule.condition_value,
-            rule.destination_folder,rule.rename_template,count,1 if rule.enabled else 0,now))
+            rule.destination_folder,rule.rename_template,count,1 if rule.enabled else 0,now,
+            rule.min_size_bytes, rule.max_age_days))
     _sync_conditions(did, rule.condition_type, rule.condition_value, rule.extra_conditions)
     return _rule_with_conditions(db_one("SELECT * FROM rules WHERE id=?", (did,)))
 
@@ -983,7 +1011,7 @@ def reorder_rules(data: RuleReorder):
 
 _RULE_COLUMNS = frozenset({
     "name", "condition_type", "condition_value", "destination_folder",
-    "rename_template", "enabled",
+    "rename_template", "enabled", "min_size_bytes", "max_age_days",
 })
 
 @api.put("/rules/{rule_id}")
@@ -1314,7 +1342,7 @@ def organize_now():
                 skipped += 1
                 continue
 
-            rule = match_rule(filename)
+            rule = match_rule(filename, file_path=full_path)
             if not rule:
                 continue
             matched += 1

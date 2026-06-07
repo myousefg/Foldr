@@ -27,6 +27,7 @@ const defaultForm = {
   name: '', condition_type: 'extension', condition_value: '',
   destination_folder: '', rename_template: '{date}_{originalname_cleaned}', enabled: true,
   extra_conditions: [],
+  min_size_mb: '', max_age_days: '',
 };
 
 export default function RulesManager() {
@@ -35,6 +36,7 @@ export default function RulesManager() {
   const [editingRule, setEditingRule] = useState(null);
   const [form, setForm]               = useState(defaultForm);
   const [saving, setSaving]           = useState(false);
+  const [sizeAgeOpen, setSizeAgeOpen] = useState(false);
   const [preview, setPreview]         = useState('');
   const [previewLoading, setPreviewLoading] = useState(false);
   const [applyingPreset, setApplyingPreset] = useState(null);
@@ -96,12 +98,15 @@ export default function RulesManager() {
     return () => controller.abort();
   }, [form.rename_template, form.condition_type, form.condition_value, form.destination_folder, form.extra_conditions]);
 
-  const openAdd  = () => { setEditingRule(null); setForm(defaultForm); setShowDialog(true); };
+  const openAdd  = () => { setEditingRule(null); setForm(defaultForm); setSizeAgeOpen(false); setShowDialog(true); };
   const openEdit = r => {
     setEditingRule(r);
+    const minSizeMb = r.min_size_bytes ? (r.min_size_bytes / (1024 * 1024)).toString() : '';
     setForm({ name: r.name, condition_type: r.condition_type, condition_value: r.condition_value,
               destination_folder: r.destination_folder, rename_template: r.rename_template || '',
-              enabled: r.enabled, extra_conditions: r.extra_conditions || [] });
+              enabled: r.enabled, extra_conditions: r.extra_conditions || [],
+              min_size_mb: minSizeMb, max_age_days: r.max_age_days?.toString() || '' });
+    setSizeAgeOpen(!!(r.min_size_bytes || r.max_age_days));
     setShowDialog(true);
   };
 
@@ -115,13 +120,21 @@ export default function RulesManager() {
     if (!form.name || !form.condition_value || !form.destination_folder) {
       toast.error('Fill in all required fields'); return;
     }
-    // Validate extra conditions
     for (const ec of form.extra_conditions) {
       if (!ec.condition_value.trim()) { toast.error('All conditions must have a value'); return; }
     }
+    const minSizeBytes = form.min_size_mb !== '' ? Math.round(parseFloat(form.min_size_mb) * 1024 * 1024) : null;
+    const maxAgeDays   = form.max_age_days !== '' ? parseInt(form.max_age_days, 10) : null;
+    if (form.min_size_mb !== '' && (isNaN(minSizeBytes) || minSizeBytes < 0)) {
+      toast.error('Min Size must be a positive number'); return;
+    }
+    if (form.max_age_days !== '' && (isNaN(maxAgeDays) || maxAgeDays < 0)) {
+      toast.error('Max Age must be a positive integer'); return;
+    }
     setSaving(true);
     try {
-      const payload = { ...form };
+      const payload = { ...form, min_size_bytes: minSizeBytes, max_age_days: maxAgeDays };
+      delete payload.min_size_mb;
       if (editingRule) { await rulesApi.update(editingRule.id, payload); toast.success('Rule updated'); }
       else             { await rulesApi.create(payload);                  toast.success('Rule created'); }
       setShowDialog(false); fetchRules();
@@ -267,6 +280,13 @@ export default function RulesManager() {
               <Badge variant="outline" className="text-[10px] font-mono hidden lg:flex shrink-0 max-w-[180px] truncate">
                 {rule.rename_template || 'no rename'}
               </Badge>
+              {(rule.min_size_bytes || rule.max_age_days) && (
+                <Badge variant="outline" className="text-[10px] font-mono hidden lg:flex shrink-0 border-primary/30 text-primary/70">
+                  {rule.min_size_bytes ? `≥${(rule.min_size_bytes/1048576).toFixed(1)}MB` : ''}
+                  {rule.min_size_bytes && rule.max_age_days ? ' · ' : ''}
+                  {rule.max_age_days ? `≤${rule.max_age_days}d` : ''}
+                </Badge>
+              )}
               <Switch checked={!!rule.enabled} onCheckedChange={() => handleToggle(rule)} />
               <button onClick={() => openEdit(rule)} className="text-muted-foreground hover:text-foreground p-1 rounded transition-colors">
                 <Pencil className="w-3.5 h-3.5" />
@@ -420,6 +440,52 @@ export default function RulesManager() {
                   }
                 </div>
               )}
+              {/* Size & Age Filters */}
+              <div className="border border-border rounded-lg overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setSizeAgeOpen(p => !p)}
+                  className="w-full flex items-center justify-between px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:bg-muted/30 transition-colors"
+                >
+                  <span className="flex items-center gap-1.5">
+                    {(form.min_size_mb || form.max_age_days) && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
+                    )}
+                    Size &amp; Age Filters (optional)
+                  </span>
+                  <ChevronDown className={`w-3.5 h-3.5 transition-transform ${sizeAgeOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {sizeAgeOpen && (
+                  <div className="px-3 pb-3 pt-1 space-y-3 border-t border-border">
+                    <p className="text-xs text-muted-foreground">Both are optional. Combined with AND logic.</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium text-muted-foreground">Min Size (MB)</label>
+                        <Input
+                          type="number" min="0" step="0.1"
+                          value={form.min_size_mb}
+                          onChange={e => setForm(p => ({ ...p, min_size_mb: e.target.value }))}
+                          placeholder="e.g. 1"
+                          className="font-mono text-sm"
+                        />
+                        <p className="text-[10px] text-muted-foreground">Only files ≥ this size.</p>
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium text-muted-foreground">Max Age (days)</label>
+                        <Input
+                          type="number" min="0" step="1"
+                          value={form.max_age_days}
+                          onChange={e => setForm(p => ({ ...p, max_age_days: e.target.value }))}
+                          placeholder="e.g. 7"
+                          className="font-mono text-sm"
+                        />
+                        <p className="text-[10px] text-muted-foreground">Only files modified ≤ N days ago.</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div className="flex items-center justify-between pt-1">
                 <Label className="text-sm font-medium">Enabled</Label>
                 <Switch checked={!!form.enabled} onCheckedChange={v => setForm(p => ({ ...p, enabled: v }))} />
