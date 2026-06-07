@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { statsApi, settingsApi, pendingApi, organizeApi } from '@/lib/api';
+import { useNavigate } from 'react-router-dom';
+import { statsApi, settingsApi, pendingApi, organizeApi, monitoredFoldersApi } from '@/lib/api';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -7,14 +8,16 @@ import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { toast } from 'sonner';
-import { FileText, ListFilter, FolderOpen, Clock, ArrowRight, Check, X, Bell, RefreshCw, ExternalLink, Folder } from 'lucide-react';
+import { FileText, ListFilter, FolderOpen, Clock, ArrowRight, Check, X, Bell, RefreshCw, ExternalLink, Folder, Plus, Eye, EyeOff } from 'lucide-react';
 
 const isElectron = !!window.electronAPI;
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   const [stats, setStats]         = useState(null);
   const [settings, setSettings]   = useState(null);
   const [pending, setPending]     = useState([]);
+  const [monFolders, setMonFolders] = useState([]);
   const [selected, setSelected]   = useState(new Set());
   const [showPending, setShowPending] = useState(false);
   const [loading, setLoading]     = useState(false);
@@ -29,8 +32,9 @@ export default function Dashboard() {
     const signal = abortRef.current.signal;
 
     try {
-      const [s, cfg, pend] = await Promise.all([
-        statsApi.get(signal), settingsApi.get(signal), pendingApi.getAll(signal)
+      const [s, cfg, pend, mf] = await Promise.all([
+        statsApi.get(signal), settingsApi.get(signal), pendingApi.getAll(signal),
+        monitoredFoldersApi.getAll(),
       ]);
       setStats(prev => {
         // Fire notification when a NEW activity entry appears
@@ -43,6 +47,7 @@ export default function Dashboard() {
       });
       setSettings(cfg);
       setPending(pend);
+      setMonFolders(mf);
 
       setSelected(prev => {
         const pendingIds = new Set(pend.map(p => p.id));
@@ -90,15 +95,6 @@ export default function Dashboard() {
       setSettings(updated);
       toast.success(`Monitoring ${updated.monitoring_enabled ? 'enabled' : 'disabled'}`);
     } catch { toast.error('Failed to toggle monitoring'); }
-  };
-
-  const selectFolder = async () => {
-    if (!isElectron) { toast.error('Folder picker only available in the desktop app'); return; }
-    const folder = await window.electronAPI.selectFolder({ title: 'Select folder to monitor' });
-    if (!folder) return;
-    const updated = await settingsApi.update({ monitored_folder: folder });
-    setSettings(updated);
-    toast.success('Monitored folder updated');
   };
 
   const openFolder = async (path) => {
@@ -171,28 +167,60 @@ export default function Dashboard() {
         <StatCard label="THIS WEEK"       value={stats?.files_week ?? 0}   icon={Clock}      />
       </div>
 
-      {/* Monitored folder */}
+      {/* Monitored folders */}
       <div className="border border-border rounded-lg">
         <div className="p-4 border-b border-border flex items-center justify-between">
           <div>
-            <h2 className="text-sm font-semibold tracking-tight">Monitored Folder</h2>
-            <p className="text-xs text-muted-foreground mt-0.5">Foldr watches this folder and moves new files automatically.</p>
+            <h2 className="text-sm font-semibold tracking-tight">Monitored Folders</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {monFolders.length > 0
+                ? `${monFolders.filter(f => f.enabled).length} of ${monFolders.length} active`
+                : 'No folders configured yet'}
+            </p>
           </div>
-          <Button variant="outline" size="sm" onClick={selectFolder}>
-            <Folder className="w-3.5 h-3.5 mr-1.5" />
-            {settings?.monitored_folder ? 'Change' : 'Select Folder'}
+          <Button variant="outline" size="sm" onClick={() => navigate('/settings')}>
+            <Plus className="w-3.5 h-3.5 mr-1.5" />
+            Manage
           </Button>
         </div>
-        <div className="p-4">
-          {settings?.monitored_folder ? (
-            <div className="flex items-center justify-between bg-muted/40 border border-border rounded px-3 py-2">
-              <span className="font-mono text-xs text-foreground truncate">{settings.monitored_folder}</span>
-              <button onClick={() => openFolder(settings.monitored_folder)} className="text-muted-foreground hover:text-foreground ml-3 shrink-0">
-                <ExternalLink className="w-3.5 h-3.5" />
-              </button>
-            </div>
+        <div className="p-4 space-y-2">
+          {monFolders.length === 0 ? (
+            <p className="text-xs text-muted-foreground italic">
+              No folders added. Go to Settings → Monitored Folders to add one.
+            </p>
           ) : (
-            <p className="text-xs text-muted-foreground italic">No folder selected. Click "Select Folder" to start.</p>
+            monFolders.map(f => (
+              <div key={f.id} className="flex items-center gap-2 bg-muted/30 border border-border rounded px-3 py-2">
+                <Folder className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+                <span className={`font-mono text-xs flex-1 truncate ${!f.enabled ? 'opacity-40 line-through' : ''}`}>
+                  {f.path}
+                </span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    onClick={async () => {
+                      const updated = await monitoredFoldersApi.toggle(f.id, !f.enabled);
+                      setMonFolders(prev => prev.map(x => x.id === f.id ? updated : x));
+                      toast.success(updated.enabled ? 'Folder resumed' : 'Folder paused');
+                    }}
+                    title={f.enabled ? 'Pause this folder' : 'Resume this folder'}
+                    className="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded"
+                  >
+                    {f.enabled
+                      ? <Eye className="w-3.5 h-3.5" />
+                      : <EyeOff className="w-3.5 h-3.5" />}
+                  </button>
+                  {isElectron && (
+                    <button
+                      onClick={() => openFolder(f.path)}
+                      title="Open in Explorer"
+                      className="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))
           )}
         </div>
       </div>

@@ -344,6 +344,7 @@ class FoldrHandler(FileSystemEventHandler):
         if not rule: return
         dest_dir = resolve_dest(rule["destination_folder"], settings)
         seq = next_seq(rule["destination_folder"])
+        auto_clean = bool(settings.get("auto_clean_names", 1))
         rule_tmpl = rule.get("rename_template")
         if rule_tmpl is None:
             tmpl = settings.get("default_rename_template", "{date}_{originalname_cleaned}")
@@ -354,8 +355,6 @@ class FoldrHandler(FileSystemEventHandler):
             tmpl = "{originalname_cleaned}" if auto_clean else "{originalname}"
         else:
             tmpl = rule_tmpl
-
-        auto_clean = bool(settings.get("auto_clean_names", 1))
 
         new_name = apply_template(tmpl, filename, seq, rule["destination_folder"], auto_clean=auto_clean)
         proposed = unique_path(os.path.join(dest_dir, new_name))
@@ -372,7 +371,8 @@ class FoldrHandler(FileSystemEventHandler):
             do_move(path, proposed, filename, new_name,
                     rule["destination_folder"], rule["id"], rule["name"])
 
-_observer: Optional[Observer] = None
+_observer: Optional[PollingObserver] = None
+_watched_folders: set = set()
 _obs_lock = threading.Lock()
 _pending_paths: set = set()
 _pending_lock = threading.Lock()
@@ -447,15 +447,22 @@ def stop_reconciler():
 
 def start_watcher(folders):
     """Accept a single folder path (str) or a list of folder paths.
-    Schedules all valid folders on a single PollingObserver."""
-    global _observer
+    Schedules all valid folders on a single PollingObserver.
+    No-ops if the active folder set hasn't changed."""
+    global _observer, _watched_folders
     if isinstance(folders, str):
         folders = [folders]
     folders = [f for f in folders if f and os.path.isdir(f)]
+    new_set = set(folders)
+
     with _obs_lock:
+        # Skip full restart if the watched set is identical
+        if new_set == _watched_folders and _observer and _observer.is_alive():
+            return
         if _observer:
             _observer.stop(); _observer.join()
         _observer = None
+        _watched_folders = set()
         if not folders:
             return
         _observer = PollingObserver(timeout=2)
@@ -464,12 +471,14 @@ def start_watcher(folders):
             _observer.schedule(handler, folder, recursive=False)
             log.info(f"Watching: {folder}")
         _observer.start()
+        _watched_folders = new_set
 
 def stop_watcher():
-    global _observer
+    global _observer, _watched_folders
     with _obs_lock:
         if _observer:
             _observer.stop(); _observer.join(); _observer = None
+        _watched_folders = set()
 
 # ── App lifespan ──────────────────────────────────────────────────────────────
 @asynccontextmanager
