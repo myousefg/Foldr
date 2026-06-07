@@ -153,6 +153,12 @@ CREATE TABLE IF NOT EXISTS pending_files (
     proposed_name TEXT, destination_folder TEXT,
     rule_id TEXT, rule_name TEXT, detected_at TEXT
 );
+CREATE TABLE IF NOT EXISTS monitored_folders (
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE,
+    enabled INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL
+);
         """)
         c.commit()
         if not c.execute("SELECT id FROM settings WHERE id='default'").fetchone():
@@ -439,16 +445,25 @@ def start_reconciler():
 def stop_reconciler():
     _reconciler_stop.set()
 
-def start_watcher(folder):
+def start_watcher(folders):
+    """Accept a single folder path (str) or a list of folder paths.
+    Schedules all valid folders on a single PollingObserver."""
     global _observer
+    if isinstance(folders, str):
+        folders = [folders]
+    folders = [f for f in folders if f and os.path.isdir(f)]
     with _obs_lock:
         if _observer:
             _observer.stop(); _observer.join()
-        if not folder or not os.path.isdir(folder): return
-        _observer = PollingObserver(timeout=2)  # 2-second poll interval — reduces CPU at idle
-        _observer.schedule(FoldrHandler(), folder, recursive=False)
+        _observer = None
+        if not folders:
+            return
+        _observer = PollingObserver(timeout=2)
+        handler = FoldrHandler()
+        for folder in folders:
+            _observer.schedule(handler, folder, recursive=False)
+            log.info(f"Watching: {folder}")
         _observer.start()
-        log.info(f"Watching: {folder}")
 
 def stop_watcher():
     global _observer
@@ -461,8 +476,15 @@ def stop_watcher():
 async def lifespan(app: FastAPI):
     init_db()
     s = db_one("SELECT * FROM settings WHERE id='default'") or {}
-    if s.get("monitoring_enabled") and s.get("monitored_folder"):
-        start_watcher(s["monitored_folder"])
+    if s.get("monitoring_enabled"):
+        # Collect all enabled monitored folders
+        rows = db_all("SELECT path FROM monitored_folders WHERE enabled=1")
+        folders = [r["path"] for r in rows]
+        # Fallback: legacy single monitored_folder from settings
+        if not folders and s.get("monitored_folder"):
+            folders = [s["monitored_folder"]]
+        if folders:
+            start_watcher(folders)
     start_reconciler()
     yield
     stop_watcher()
@@ -507,11 +529,82 @@ def update_settings(data: SettingsUpdate):
     db_run(f"UPDATE settings SET {sets} WHERE id='default'", list(fields.values()))
     if "monitored_folder" in fields or "monitoring_enabled" in fields:
         s = db_one("SELECT * FROM settings WHERE id='default'") or {}
-        if s.get("monitoring_enabled") and s.get("monitored_folder"):
-            start_watcher(s["monitored_folder"])
+        if s.get("monitoring_enabled"):
+            rows = db_all("SELECT path FROM monitored_folders WHERE enabled=1")
+            folders = [r["path"] for r in rows]
+            if not folders and s.get("monitored_folder"):
+                folders = [s["monitored_folder"]]
+            if folders:
+                start_watcher(folders)
+            else:
+                stop_watcher()
         else:
             stop_watcher()
     return db_one("SELECT * FROM settings WHERE id='default'")
+
+# ── Monitored Folders ─────────────────────────────────────────────────────────
+class MonitoredFolderCreate(BaseModel):
+    path: str
+    enabled: bool = True
+
+class MonitoredFolderUpdate(BaseModel):
+    enabled: Optional[bool] = None
+
+def _restart_watcher_from_db():
+    """Restart the watcher using all enabled monitored_folders in the DB."""
+    s = db_one("SELECT * FROM settings WHERE id='default'") or {}
+    if not s.get("monitoring_enabled"):
+        stop_watcher()
+        return
+    rows = db_all("SELECT path FROM monitored_folders WHERE enabled=1")
+    folders = [r["path"] for r in rows]
+    if folders:
+        start_watcher(folders)
+    else:
+        stop_watcher()
+
+@api.get("/monitored-folders")
+def get_monitored_folders():
+    return db_all("SELECT * FROM monitored_folders ORDER BY created_at ASC")
+
+@api.post("/monitored-folders")
+def add_monitored_folder(data: MonitoredFolderCreate):
+    p = Path(data.path)
+    if ".." in p.parts:
+        raise HTTPException(400, "Path must not contain '..'.")
+    if not p.is_absolute():
+        raise HTTPException(400, "Path must be absolute.")
+    if not p.is_dir():
+        raise HTTPException(400, "Path does not exist or is not a directory.")
+    existing = db_one("SELECT id FROM monitored_folders WHERE path=?", (str(p),))
+    if existing:
+        raise HTTPException(409, "Folder is already being monitored.")
+    fid = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    db_run("INSERT INTO monitored_folders (id, path, enabled, created_at) VALUES (?,?,?,?)",
+           (fid, str(p), 1 if data.enabled else 0, now))
+    _restart_watcher_from_db()
+    return db_one("SELECT * FROM monitored_folders WHERE id=?", (fid,))
+
+@api.patch("/monitored-folders/{folder_id}")
+def update_monitored_folder(folder_id: str, data: MonitoredFolderUpdate):
+    row = db_one("SELECT * FROM monitored_folders WHERE id=?", (folder_id,))
+    if not row:
+        raise HTTPException(404, "Monitored folder not found.")
+    if data.enabled is not None:
+        db_run("UPDATE monitored_folders SET enabled=? WHERE id=?",
+               (1 if data.enabled else 0, folder_id))
+    _restart_watcher_from_db()
+    return db_one("SELECT * FROM monitored_folders WHERE id=?", (folder_id,))
+
+@api.delete("/monitored-folders/{folder_id}")
+def delete_monitored_folder(folder_id: str):
+    row = db_one("SELECT * FROM monitored_folders WHERE id=?", (folder_id,))
+    if not row:
+        raise HTTPException(404, "Monitored folder not found.")
+    db_run("DELETE FROM monitored_folders WHERE id=?", (folder_id,))
+    _restart_watcher_from_db()
+    return {"message": "removed"}
 
 # ── Rules ─────────────────────────────────────────────────────────────────────
 class RuleCreate(BaseModel):
