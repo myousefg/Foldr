@@ -1,0 +1,178 @@
+{
+  "sidebar": {
+    "tagline": "PENGATUR FILE",
+    "dashboard": "DASBOR",
+    "rules": "ATURAN",
+    "activity": "AKTIVITAS",
+    "settings": "PENGATURAN"
+  },
+  "dashboard": {
+    "title": "Dasbor",
+    "subtitle": "Atur sekali. Selesai selamanya.",
+    "monitoring": "Pemantauan",
+    "active": "AKTIF",
+    "paused": "DIJEDA",
+    "stats": {
+      "today": "FILE HARI INI",
+      "activeRules": "ATURAN AKTIF",
+      "total": "TOTAL TERORGANISIR",
+      "week": "MINGGU INI"
+    },
+    "monitoredFolder": {
+      "title": "Folder Dipantau",
+      "description": "Foldr memantau folder ini dan memindahkan file baru secara otomatis.",
+      "change": "Ganti",
+      "select": "Pilih Folder",
+      "noFolder": "Belum ada folder yang dipilih. Klik \"Pilih Folder\" untuk memulai."
+    },
+    "pending": {
+      "waiting_one": "{{count}} file menunggu untuk ditinjau",
+      "waiting_other": "{{count}} file menunggu untuk ditinjau",
+      "cta": "Klik untuk Meninjau — file-file ini belum dipindahkan",
+      "reviewBtn": "Tinjau →"
+    },
+    "recentActivity": {
+      "title": "Aktivitas Terbaru",
+      "empty": "Belum ada aktivitas"
+    },
+    "folders": {
+      "title": "Folder",
+      "empty": "Belum ada folder"
+    },
+    "pendingDialog": {
+      "title": "Tinjau Pemindahan Tertunda",
+      "subtitle": "Pilih pemindahan yang ingin diterapkan. File yang tidak dipilih tetap di tempatnya.",
+      "cancel": "Batal",
+      "apply": "Terapkan",
+      "applyCount": "Terapkan ({{count}}) Pemindahan"
+    }
+  },
+  "activity": {
+    "title": "Log Aktivitas",
+    "subtitle": "Setiap pemindahan file tercatat dengan waktu. Batalkan dengan satu klik.",
+    "clear": "Hapus",
+    "searchPlaceholder": "Cari nama file…",
+    "allRules": "Semua aturan",
+    "columns": {
+      "time": "Waktu",
+      "original": "Asli",
+      "renamedTo": "Diubah menjadi",
+      "destination": "Tujuan"
+    },
+    "empty": {
+      "title": "Belum ada aktivitas",
+      "subtitle": "File yang dipindahkan oleh Foldr akan muncul di sini."
+    },
+    "noMatch": "Tidak ada entri yang cocok dengan pencarianmu.",
+    "clearFilters": "Hapus filter",
+    "undone": "dibatalkan",
+    "tooltips": {
+      "openFolder": "Buka folder",
+      "undo": "Batalkan"
+    }
+  },
+  "rules": {
+    "title": "Aturan",
+    "subtitle": "Aturan dicocokkan secara berurutan — yang pertama cocok yang dipakai.",
+    "addRule": "Tambah Aturan",
+    "noRules": {
+      "title": "Belum ada aturan",
+      "subtitle": "Tambah aturan pertamamu atau muat preset untuk memulai."
+    },
+    "presets": {
+      "title": "Preset Cepat",
+      "subtitle": "Muat set aturan awal sesuai alur kerjamu."
+    },
+    "dialog": {
+      "addTitle": "Tambah Aturan",
+      "editTitle": "Edit Aturan",
+      "ruleName": "Nama Aturan",
+      "ruleNamePlaceholder": "contoh: Pindahkan PDF ke Dokumen",
+      "conditionType": "Jenis Kondisi",
+      "extension": "Ekstensi file",
+      "keyword": "Kata kunci nama file",
+      "conditionValue": "Nilai Kondisi",
+      "extensionPlaceholder": ".pdf",
+      "keywordPlaceholder": "invoice",
+      "destination": "Folder Tujuan",
+      "destinationPlaceholder": "Dokumen",
+      "browse": "Telusuri",
+      "renameTemplate": "Template Penamaan",
+      "previewLabel": "Pratinjau",
+      "enableRule": "Aktifkan aturan ini",
+      "cancel": "Batal",
+      "save": "Simpan Aturan",
+      "saving": "Menyimpan…"
+    },
+    "import": "Impor",
+    "export": "Ekspor",
+    "importSuccess": "{{count}} aturan berhasil diimpor.",
+    "importError": "File aturan tidak valid.",
+    "exportSuccess": "Aturan berhasil diekspor.",
+    "deleteConfirm": "Hapus aturan ini?",
+    "toggleError": "Pembaruan gagal",
+    "deleteError": "Penghapusan gagal",
+    "saveError": "Gagal menyimpan aturan",
+    "fillFields": "Lengkapi semua kolom yang diperlukan",
+    "ruleCreated": "Aturan dibuat",
+    "ruleUpdated": "Aturan diperbarui"
+  },
+  "settings": {
+    "title": "Pengaturan",
+    "subtitle": "Konfigurasi pemantauan, penamaan, dan tampilan.",
+    "folders": {
+      "title": "Folder",
+      "monitored": "Folder Dipantau",
+      "monitoredDesc": "Foldr memantau folder ini untuk file baru.",
+      "baseOutput": "Folder Output Dasar",
+      "baseOutputDesc": "Tujuan aturan seperti \"Dokumen\" relatif terhadap ini. Kosongkan untuk menggunakan direktori home.",
+      "monitoredPlaceholder": "contoh: C:\\Users\\Kamu\\Downloads",
+      "baseOutputPlaceholder": "contoh: C:\\Users\\Kamu  (default: direktori home)"
+    },
+    "behaviour": {
+      "title": "Perilaku",
+      "preview": "Pratinjau sebelum memindahkan",
+      "previewDesc": "Antrekan file yang terdeteksi untuk ditinjau alih-alih langsung dipindahkan.",
+      "monitoring": "Pemantauan aktif",
+      "monitoringDesc": "Jeda pemantauan tanpa menghapus konfigurasi folder atau aturan.",
+      "autoClean": "Bersihkan nama file otomatis",
+      "autoCleanDesc": "Hapus kode kamera (IMG_, DSC_), penanda salinan, dan normalkan spasi.",
+      "autoStart": "Mulai bersama Windows",
+      "autoStartDesc": "Jalankan Foldr otomatis saat login. Aplikasi terbuka dalam mode tray."
+    },
+    "renameTemplate": {
+      "title": "Template Penamaan Default",
+      "description": "Digunakan saat aturan tidak memiliki template.",
+      "tokens": "Token:",
+      "placeholder": "{date}_{originalname_cleaned}"
+    },
+    "appearance": {
+      "title": "Tampilan",
+      "description": "Pilih tema warna untuk aplikasi.",
+      "light": "Terang",
+      "dark": "Gelap",
+      "system": "Sistem"
+    },
+    "language": {
+      "title": "Bahasa",
+      "description": "Pilih bahasa tampilan untuk aplikasi.",
+      "english": "English",
+      "indonesian": "Bahasa Indonesia"
+    },
+    "save": "Simpan Pengaturan",
+    "saving": "Menyimpan…",
+    "saved": "Pengaturan tersimpan",
+    "saveFailed": "Gagal menyimpan",
+    "autoStartEnabled": "Foldr akan mulai bersama Windows",
+    "autoStartDisabled": "Mulai otomatis dinonaktifkan",
+    "autoStartFailed": "Gagal mengatur mulai otomatis",
+    "autoStartDesktopOnly": "Mulai otomatis hanya tersedia di aplikasi yang sudah diinstal",
+    "folderDesktopOnly": "Pemilih folder hanya tersedia di aplikasi desktop",
+    "loadFailed": "Gagal memuat pengaturan"
+  },
+  "common": {
+    "loading": "Memuat…",
+    "browse": "Telusuri",
+    "openExplorer": "Buka di Explorer"
+  }
+}

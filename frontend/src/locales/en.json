@@ -1,0 +1,178 @@
+{
+  "sidebar": {
+    "tagline": "FILE ORGANIZER",
+    "dashboard": "DASHBOARD",
+    "rules": "RULES",
+    "activity": "ACTIVITY",
+    "settings": "SETTINGS"
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "subtitle": "Set once. Forget forever.",
+    "monitoring": "Monitoring",
+    "active": "ACTIVE",
+    "paused": "PAUSED",
+    "stats": {
+      "today": "FILES TODAY",
+      "activeRules": "ACTIVE RULES",
+      "total": "TOTAL ORGANIZED",
+      "week": "THIS WEEK"
+    },
+    "monitoredFolder": {
+      "title": "Monitored Folder",
+      "description": "Foldr watches this folder and moves new files automatically.",
+      "change": "Change",
+      "select": "Select Folder",
+      "noFolder": "No folder selected. Click \"Select Folder\" to start."
+    },
+    "pending": {
+      "waiting_one": "{{count}} file waiting for review",
+      "waiting_other": "{{count}} files waiting for review",
+      "cta": "Click to Review — these files haven't been moved yet",
+      "reviewBtn": "Review →"
+    },
+    "recentActivity": {
+      "title": "Recent Activity",
+      "empty": "No recent activity"
+    },
+    "folders": {
+      "title": "Folders",
+      "empty": "No folders yet"
+    },
+    "pendingDialog": {
+      "title": "Review Pending Moves",
+      "subtitle": "Select which moves to apply. Unselected files stay in place.",
+      "cancel": "Cancel",
+      "apply": "Apply",
+      "applyCount": "Apply ({{count}}) Moves"
+    }
+  },
+  "activity": {
+    "title": "Activity Log",
+    "subtitle": "Every file move, timestamped. Undo in one click.",
+    "clear": "Clear",
+    "searchPlaceholder": "Search filenames…",
+    "allRules": "All rules",
+    "columns": {
+      "time": "Time",
+      "original": "Original",
+      "renamedTo": "Renamed to",
+      "destination": "Destination"
+    },
+    "empty": {
+      "title": "No activity yet",
+      "subtitle": "Files moved by Foldr will appear here."
+    },
+    "noMatch": "No entries match your search.",
+    "clearFilters": "Clear filters",
+    "undone": "undone",
+    "tooltips": {
+      "openFolder": "Open folder",
+      "undo": "Undo"
+    }
+  },
+  "rules": {
+    "title": "Rules",
+    "subtitle": "Rules are matched in order — first match wins.",
+    "addRule": "Add Rule",
+    "noRules": {
+      "title": "No rules yet",
+      "subtitle": "Add your first rule or load a preset to get started."
+    },
+    "presets": {
+      "title": "Quick-start Presets",
+      "subtitle": "Load a starter set of rules for your workflow."
+    },
+    "dialog": {
+      "addTitle": "Add Rule",
+      "editTitle": "Edit Rule",
+      "ruleName": "Rule Name",
+      "ruleNamePlaceholder": "e.g. Move PDFs to Documents",
+      "conditionType": "Condition Type",
+      "extension": "File extension",
+      "keyword": "Filename keyword",
+      "conditionValue": "Condition Value",
+      "extensionPlaceholder": ".pdf",
+      "keywordPlaceholder": "invoice",
+      "destination": "Destination Folder",
+      "destinationPlaceholder": "Documents",
+      "browse": "Browse",
+      "renameTemplate": "Rename Template",
+      "previewLabel": "Preview",
+      "enableRule": "Enable this rule",
+      "cancel": "Cancel",
+      "save": "Save Rule",
+      "saving": "Saving…"
+    },
+    "import": "Import",
+    "export": "Export",
+    "importSuccess": "Imported {{count}} rules.",
+    "importError": "Invalid rules file.",
+    "exportSuccess": "Rules exported.",
+    "deleteConfirm": "Delete this rule?",
+    "toggleError": "Update failed",
+    "deleteError": "Delete failed",
+    "saveError": "Failed to save rule",
+    "fillFields": "Fill in all required fields",
+    "ruleCreated": "Rule created",
+    "ruleUpdated": "Rule updated"
+  },
+  "settings": {
+    "title": "Settings",
+    "subtitle": "Configure monitoring, naming, and appearance.",
+    "folders": {
+      "title": "Folders",
+      "monitored": "Monitored Folder",
+      "monitoredDesc": "Foldr watches this folder for new files.",
+      "baseOutput": "Base Output Folder",
+      "baseOutputDesc": "Rule destinations like \"Documents\" are relative to this. Leave blank to use your home directory.",
+      "monitoredPlaceholder": "e.g. C:\\Users\\You\\Downloads",
+      "baseOutputPlaceholder": "e.g. C:\\Users\\You  (default: home directory)"
+    },
+    "behaviour": {
+      "title": "Behaviour",
+      "preview": "Preview before moving",
+      "previewDesc": "Queue detected files for your review instead of moving them immediately.",
+      "monitoring": "Monitoring enabled",
+      "monitoringDesc": "Pause monitoring without losing your folder or rule configuration.",
+      "autoClean": "Auto-clean filenames",
+      "autoCleanDesc": "Strip camera codes (IMG_, DSC_), copy markers, and normalise spacing.",
+      "autoStart": "Start with Windows",
+      "autoStartDesc": "Launch Foldr automatically when you log in. App opens minimized to tray."
+    },
+    "renameTemplate": {
+      "title": "Default Rename Template",
+      "description": "Used when a rule has no template.",
+      "tokens": "Tokens:",
+      "placeholder": "{date}_{originalname_cleaned}"
+    },
+    "appearance": {
+      "title": "Appearance",
+      "description": "Choose the colour theme for the app.",
+      "light": "Light",
+      "dark": "Dark",
+      "system": "System"
+    },
+    "language": {
+      "title": "Language",
+      "description": "Choose the display language for the app.",
+      "english": "English",
+      "indonesian": "Bahasa Indonesia"
+    },
+    "save": "Save Settings",
+    "saving": "Saving…",
+    "saved": "Settings saved",
+    "saveFailed": "Failed to save",
+    "autoStartEnabled": "Foldr will now start with Windows",
+    "autoStartDisabled": "Auto-start disabled",
+    "autoStartFailed": "Failed to set auto-start",
+    "autoStartDesktopOnly": "Auto-start only works in the packaged app",
+    "folderDesktopOnly": "Folder picker only available in the desktop app",
+    "loadFailed": "load settings failed"
+  },
+  "common": {
+    "loading": "Loading…",
+    "browse": "Browse",
+    "openExplorer": "Open in Explorer"
+  }
+}

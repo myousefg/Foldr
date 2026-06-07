@@ -133,13 +133,6 @@ CREATE TABLE IF NOT EXISTS rules (
     enabled INTEGER DEFAULT 1,
     created_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS rule_conditions (
-    id TEXT PRIMARY KEY,
-    rule_id TEXT NOT NULL,
-    condition_type TEXT NOT NULL,
-    condition_value TEXT NOT NULL,
-    FOREIGN KEY (rule_id) REFERENCES rules(id) ON DELETE CASCADE
-);
 CREATE TABLE IF NOT EXISTS organized_files (
     id TEXT PRIMARY KEY,
     original_name TEXT, original_path TEXT,
@@ -169,6 +162,14 @@ CREATE TABLE IF NOT EXISTS monitored_folders (
     enabled INTEGER DEFAULT 1,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS rule_conditions (
+    id TEXT PRIMARY KEY,
+    rule_id TEXT NOT NULL,
+    condition_type TEXT NOT NULL,
+    condition_value TEXT NOT NULL,
+    sort_order INTEGER DEFAULT 0,
+    FOREIGN KEY (rule_id) REFERENCES rules(id) ON DELETE CASCADE
+);
         """)
         c.commit()
         # ── Migrations: add new columns to existing tables if missing ──────────
@@ -183,25 +184,13 @@ CREATE TABLE IF NOT EXISTS monitored_folders (
             c.execute("ALTER TABLE pending_files ADD COLUMN content_hash TEXT")
         if 'duplicate_of'     not in existing_cols('pending_files'):
             c.execute("ALTER TABLE pending_files ADD COLUMN duplicate_of TEXT")
-        # ── Migrate existing single-condition rules into rule_conditions ───────
-        existing_rc_tables = {r[0] for r in c.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='rule_conditions'"
-        ).fetchall()}
-        # Table is created above via executescript; seed it for existing rules
-        # that don't yet have entries in rule_conditions.
-        existing_rc_rule_ids = {r[0] for r in c.execute(
-            "SELECT DISTINCT rule_id FROM rule_conditions"
-        ).fetchall()} if existing_rc_tables else set()
-        rules_to_migrate = c.execute(
-            "SELECT id, condition_type, condition_value FROM rules"
-        ).fetchall()
-        for row in rules_to_migrate:
-            rid = row[0]
-            if rid not in existing_rc_rule_ids:
-                cid = str(uuid.uuid4())
+        # Migrate existing single-condition rules into rule_conditions table
+        existing_rc = {r[0] for r in c.execute("SELECT DISTINCT rule_id FROM rule_conditions").fetchall()}
+        for row in c.execute("SELECT id, condition_type, condition_value FROM rules").fetchall():
+            if row[0] not in existing_rc:
                 c.execute(
-                    "INSERT INTO rule_conditions (id, rule_id, condition_type, condition_value) VALUES (?,?,?,?)",
-                    (cid, rid, row[1], row[2]),
+                    "INSERT INTO rule_conditions (id, rule_id, condition_type, condition_value, sort_order) VALUES (?,?,?,?,0)",
+                    (str(uuid.uuid4()), row[0], row[1], row[2])
                 )
         c.commit()
         if not c.execute("SELECT id FROM settings WHERE id='default'").fetchone():
@@ -323,9 +312,8 @@ def resolve_dest(folder: str, settings: dict) -> str:
     base = Path(settings.get("base_output_folder") or str(Path.home()))
     return str(_safe_resolve(base / folder, base))
 
-def _condition_matches(condition_type: str, condition_value: str, filename: str, ext: str) -> bool:
+def _condition_matches(condition_type: str, condition_value: str, filename: str, ext: str, nl: str) -> bool:
     cv = condition_value.lower()
-    nl = filename.lower()
     if condition_type == "extension":
         if not cv.startswith('.'): cv = '.' + cv
         return ext == cv
@@ -336,17 +324,20 @@ def _condition_matches(condition_type: str, condition_value: str, filename: str,
 def match_rule(filename: str) -> Optional[dict]:
     rules = db_all("SELECT * FROM rules WHERE enabled=1 ORDER BY priority")
     ext = ('.' + filename.rsplit('.', 1)[1].lower()) if '.' in filename else ''
+    nl = filename.lower()
     for rule in rules:
         conditions = db_all(
-            "SELECT condition_type, condition_value FROM rule_conditions WHERE rule_id=?",
+            "SELECT condition_type, condition_value FROM rule_conditions WHERE rule_id=? ORDER BY sort_order",
             (rule["id"],)
         )
         if not conditions:
-            conditions = [{"condition_type": rule["condition_type"],
-                           "condition_value": rule["condition_value"]}]
-        if all(_condition_matches(c["condition_type"], c["condition_value"], filename, ext)
-               for c in conditions):
-            return rule
+            # Fallback: use legacy inline condition (backward compat)
+            if _condition_matches(rule["condition_type"], rule["condition_value"], filename, ext, nl):
+                return rule
+        else:
+            # AND logic: ALL conditions must match
+            if all(_condition_matches(c["condition_type"], c["condition_value"], filename, ext, nl) for c in conditions):
+                return rule
     return None
 
 def next_seq(folder: str) -> int:
@@ -775,24 +766,15 @@ class ConditionItem(BaseModel):
     condition_value: str
 
 class RuleCreate(BaseModel):
-    name: str
-    destination_folder: str
-    rename_template: str = ""
-    enabled: bool = True
-    # Legacy single-condition fields (kept for backwards-compat with old clients)
-    condition_type: str = "extension"
-    condition_value: str = ""
-    # New multi-condition list — takes precedence when provided
-    conditions: Optional[List[ConditionItem]] = None
+    name: str; condition_type: str; condition_value: str
+    destination_folder: str; rename_template: str = ""; enabled: bool = True
+    extra_conditions: List[ConditionItem] = []
 
 class RuleUpdate(BaseModel):
-    name: Optional[str] = None
-    destination_folder: Optional[str] = None
-    rename_template: Optional[str] = None
-    enabled: Optional[bool] = None
-    condition_type: Optional[str] = None
-    condition_value: Optional[str] = None
-    conditions: Optional[List[ConditionItem]] = None
+    name: Optional[str] = None; condition_type: Optional[str] = None
+    condition_value: Optional[str] = None; destination_folder: Optional[str] = None
+    rename_template: Optional[str] = None; enabled: Optional[bool] = None
+    extra_conditions: Optional[List[ConditionItem]] = None
 
 class RuleReorder(BaseModel):
     rule_ids: List[str]
@@ -803,20 +785,12 @@ def _validate_rule_fields(
     name: Optional[str] = None,
     condition_type: Optional[str] = None,
     destination_folder: Optional[str] = None,
-    conditions: Optional[list] = None,
 ):
     """Raise HTTPException for any field that fails basic input sanitisation."""
     if name is not None and (not name.strip() or len(name) > 128):
         raise HTTPException(400, "Rule name must be 1–128 non-blank characters.")
     if condition_type is not None and condition_type not in _VALID_CONDITION_TYPES:
         raise HTTPException(400, f"condition_type must be one of: {sorted(_VALID_CONDITION_TYPES)}")
-    if conditions is not None:
-        if not conditions:
-            raise HTTPException(400, "conditions list must not be empty.")
-        for c in conditions:
-            ct = c.condition_type if hasattr(c, "condition_type") else c.get("condition_type", "")
-            if ct not in _VALID_CONDITION_TYPES:
-                raise HTTPException(400, f"condition_type must be one of: {sorted(_VALID_CONDITION_TYPES)}")
     if destination_folder is not None:
         norm = Path(destination_folder).as_posix()
         if ".." in norm.split("/"):
@@ -907,6 +881,7 @@ def apply_template_route(ttype: str):
                    (rid, rd["name"], rd["condition_type"], cv,
                     rd["destination_folder"], rd["rename_template"], count + i, 1, now))
             existing_keys.add(key)  # update snapshot so same-call duplicates are caught too
+            _sync_conditions(rid, rd["condition_type"], cv, [])
             row = db_one("SELECT * FROM rules WHERE id=?", (rid,))
             if row: added_rules.append(row)
         return {"added": len(added_rules), "skipped": len(skipped_vals), "rules": added_rules}
@@ -961,49 +936,44 @@ def import_rules(data: ImportRulesData):
         added += 1
     return {"added": added, "skipped": skipped}
 
-def _enrich_rule_with_conditions(rule: dict) -> dict:
-    """Attach a 'conditions' list to a rule dict fetched from DB."""
-    conds = db_all(
-        "SELECT condition_type, condition_value FROM rule_conditions WHERE rule_id=? ORDER BY rowid",
+def _sync_conditions(rule_id: str, primary_type: str, primary_value: str, extra: list):
+    """Replace all rule_conditions for a rule with primary + extra conditions."""
+    db_run("DELETE FROM rule_conditions WHERE rule_id=?", (rule_id,))
+    all_conditions = [{"condition_type": primary_type, "condition_value": primary_value}] + \
+                     [{"condition_type": c.condition_type, "condition_value": c.condition_value} for c in extra]
+    for i, cond in enumerate(all_conditions):
+        db_run("INSERT INTO rule_conditions (id, rule_id, condition_type, condition_value, sort_order) VALUES (?,?,?,?,?)",
+               (str(uuid.uuid4()), rule_id, cond["condition_type"], cond["condition_value"], i))
+
+def _rule_with_conditions(rule: dict) -> dict:
+    """Attach extra_conditions list to a rule dict."""
+    conditions = db_all(
+        "SELECT condition_type, condition_value FROM rule_conditions WHERE rule_id=? ORDER BY sort_order",
         (rule["id"],)
     )
-    if not conds:
-        conds = [{"condition_type": rule["condition_type"], "condition_value": rule["condition_value"]}]
-    rule["conditions"] = conds
+    rule = dict(rule)
+    rule["extra_conditions"] = [
+        {"condition_type": c["condition_type"], "condition_value": c["condition_value"]}
+        for c in conditions[1:]  # first condition is the primary (already on rule row)
+    ]
     return rule
 
 @api.get("/rules")
 def get_rules():
     rules = db_all("SELECT * FROM rules ORDER BY priority")
-    return [_enrich_rule_with_conditions(r) for r in rules]
-def _sync_rule_conditions(rule_id: str, conditions: list):
-    """Replace all rule_conditions rows for a rule with the given list."""
-    db_run("DELETE FROM rule_conditions WHERE rule_id=?", (rule_id,))
-    for c in conditions:
-        ct = c.condition_type if hasattr(c, "condition_type") else c["condition_type"]
-        cv = c.condition_value if hasattr(c, "condition_value") else c["condition_value"]
-        db_run(
-            "INSERT INTO rule_conditions (id, rule_id, condition_type, condition_value) VALUES (?,?,?,?)",
-            (str(uuid.uuid4()), rule_id, ct, cv.lower().strip()),
-        )
+    return [_rule_with_conditions(r) for r in rules]
 
 @api.post("/rules")
 def create_rule(rule: RuleCreate):
-    conditions = rule.conditions if rule.conditions else [
-        ConditionItem(condition_type=rule.condition_type, condition_value=rule.condition_value)
-    ]
-    _validate_rule_fields(rule.name, destination_folder=rule.destination_folder, conditions=conditions)
-    # Use primary condition for legacy columns (keeps backward compat / existing queries working)
-    primary = conditions[0]
+    _validate_rule_fields(rule.name, rule.condition_type, rule.destination_folder)
     count = db_one("SELECT COUNT(*) AS c FROM rules")["c"]
     did = str(uuid.uuid4()); now = datetime.now(timezone.utc).isoformat()
     db_run("""INSERT INTO rules (id,name,condition_type,condition_value,destination_folder,
                rename_template,priority,enabled,created_at) VALUES (?,?,?,?,?,?,?,?,?)""",
-           (did, rule.name, primary.condition_type, primary.condition_value.lower().strip(),
-            rule.destination_folder, rule.rename_template, count, 1 if rule.enabled else 0, now))
-    _sync_rule_conditions(did, conditions)
-    r = db_one("SELECT * FROM rules WHERE id=?", (did,))
-    return _enrich_rule_with_conditions(r)
+           (did,rule.name,rule.condition_type,rule.condition_value,
+            rule.destination_folder,rule.rename_template,count,1 if rule.enabled else 0,now))
+    _sync_conditions(did, rule.condition_type, rule.condition_value, rule.extra_conditions)
+    return _rule_with_conditions(db_one("SELECT * FROM rules WHERE id=?", (did,)))
 
 @api.put("/rules/reorder")
 def reorder_rules(data: RuleReorder):
@@ -1018,39 +988,33 @@ _RULE_COLUMNS = frozenset({
 
 @api.put("/rules/{rule_id}")
 def update_rule(rule_id: str, rule: RuleUpdate):
-    _validate_rule_fields(rule.name, rule.condition_type, rule.destination_folder, rule.conditions)
-    # Build conditions list: prefer explicit conditions; fall back to legacy single-condition fields
-    new_conditions = rule.conditions
-    if new_conditions is None and (rule.condition_type or rule.condition_value):
-        existing = db_one("SELECT condition_type, condition_value FROM rules WHERE id=?", (rule_id,))
-        ct = rule.condition_type or (existing["condition_type"] if existing else "extension")
-        cv = rule.condition_value or (existing["condition_value"] if existing else "")
-        new_conditions = [ConditionItem(condition_type=ct, condition_value=cv)]
-    # Update the rule_conditions table if new conditions were provided
-    if new_conditions is not None:
-        _sync_rule_conditions(rule_id, new_conditions)
-        # Also keep legacy columns in sync with primary condition
-        primary = new_conditions[0]
-        rule_dump = rule.model_dump(exclude={"conditions"})
-        rule_dump["condition_type"] = primary.condition_type
-        rule_dump["condition_value"] = primary.condition_value.lower().strip()
-    else:
-        rule_dump = rule.model_dump(exclude={"conditions"})
+    _validate_rule_fields(rule.name, rule.condition_type, rule.destination_folder)
+    dump = rule.model_dump()
+    extra_conditions = dump.pop("extra_conditions", None)
     fields = {k: (1 if v is True else (0 if v is False else v))
-              for k, v in rule_dump.items() if v is not None}
+              for k, v in dump.items() if v is not None and k in _RULE_COLUMNS}
     if fields:
-        allowed = _RULE_COLUMNS
-        if invalid := set(fields) - allowed:
-            raise HTTPException(400, f"Unknown rule fields: {invalid}")
         sets = ", ".join(f"{k}=?" for k in fields)
         db_run(f"UPDATE rules SET {sets} WHERE id=?", [*fields.values(), rule_id])
     r = db_one("SELECT * FROM rules WHERE id=?", (rule_id,))
     if not r: raise HTTPException(404, "Not found")
-    return _enrich_rule_with_conditions(r)
+    # Sync conditions if extra_conditions provided
+    if extra_conditions is not None:
+        primary_type  = fields.get("condition_type",  r["condition_type"])
+        primary_value = fields.get("condition_value", r["condition_value"])
+        from pydantic import BaseModel as _BM
+        class _CI(_BM):
+            condition_type: str; condition_value: str
+        _sync_conditions(rule_id, primary_type, primary_value,
+                         [_CI(condition_type=c["condition_type"], condition_value=c["condition_value"])
+                          for c in extra_conditions])
+    return _rule_with_conditions(r)
 
 @api.delete("/rules/{rule_id}")
 def delete_rule(rule_id: str):
-    db_run("DELETE FROM rules WHERE id=?", (rule_id,)); return {"message": "deleted"}
+    db_run("DELETE FROM rule_conditions WHERE rule_id=?", (rule_id,))
+    db_run("DELETE FROM rules WHERE id=?", (rule_id,))
+    return {"message": "deleted"}
 
 # ── Pending ───────────────────────────────────────────────────────────────────
 class PendingAction(BaseModel):
