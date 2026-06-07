@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { rulesApi, organizeApi } from '@/lib/api';
+import { useI18n } from '@/context/I18nProvider';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
@@ -31,6 +32,7 @@ const defaultForm = {
 };
 
 export default function RulesManager() {
+  const { t } = useI18n();
   const [rules, setRules]             = useState([]);
   const [showDialog, setShowDialog]   = useState(false);
   const [editingRule, setEditingRule] = useState(null);
@@ -135,16 +137,16 @@ export default function RulesManager() {
     try {
       const payload = { ...form, min_size_bytes: minSizeBytes, max_age_days: maxAgeDays };
       delete payload.min_size_mb;
-      if (editingRule) { await rulesApi.update(editingRule.id, payload); toast.success('Rule updated'); }
-      else             { await rulesApi.create(payload);                  toast.success('Rule created'); }
+      if (editingRule) { await rulesApi.update(editingRule.id, payload); toast.success(t('rules.ruleUpdated')); }
+      else             { await rulesApi.create(payload);                  toast.success(t('rules.ruleCreated')); }
       setShowDialog(false); fetchRules();
-    } catch { toast.error('Failed to save rule'); }
+    } catch { toast.error(t('rules.fillRequired')); }
     setSaving(false);
   };
 
   const handleDelete = async id => {
-    try { await rulesApi.delete(id); toast.success('Rule deleted'); fetchRules(); }
-    catch { toast.error('Delete failed'); }
+    try { await rulesApi.delete(id); toast.success(t('rules.ruleDeleted')); fetchRules(); }
+    catch { toast.error(t('common.error')); }
   };
 
   const handleToggle = async rule => {
@@ -218,22 +220,20 @@ export default function RulesManager() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">Rules</h1>
-          <p className="text-sm text-muted-foreground mt-1">Conditions + destinations. Evaluated top-to-bottom.</p>
+          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">{t('rules.title')}</h1>
+          <p className="text-sm text-muted-foreground mt-1">{t('rules.subtitle')}</p>
         </div>
         <div className="flex items-center gap-2">
           {/* Export */}
-          <Button variant="outline" size="sm" onClick={exportRules} title="Export rules as JSON">
-            <Download className="w-3.5 h-3.5 mr-1.5" />Export
+          <Button variant="outline" size="sm" onClick={exportRules} title={t('rules.export')}>
+            <Download className="w-3.5 h-3.5 mr-1.5" />{t('rules.export')}
           </Button>
-          {/* Import */}
-          <Button variant="outline" size="sm" onClick={() => importRef.current?.click()} title="Import rules from JSON">
-            <Upload className="w-3.5 h-3.5 mr-1.5" />Import
+          <Button variant="outline" size="sm" onClick={() => importRef.current?.click()} title={t('rules.import')}>
+            <Upload className="w-3.5 h-3.5 mr-1.5" />{t('rules.import')}
           </Button>
           <input ref={importRef} type="file" accept=".json" className="hidden" onChange={importRules} />
-          {/* New rule */}
           <Button size="sm" onClick={openAdd}>
-            <Plus className="w-3.5 h-3.5 mr-1.5" />New Rule
+            <Plus className="w-3.5 h-3.5 mr-1.5" />{t('rules.addRule')}
           </Button>
         </div>
       </div>
@@ -243,8 +243,8 @@ export default function RulesManager() {
       {/* Rules list */}
       {rules.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-12 text-center border border-dashed rounded-lg">
-          <p className="text-sm font-medium text-muted-foreground">No rules yet</p>
-          <p className="text-xs text-muted-foreground mt-1 mb-4">Add a rule manually or apply a preset below.</p>
+          <p className="text-sm font-medium text-muted-foreground">{t('rules.noRules')}</p>
+          <p className="text-xs text-muted-foreground mt-1 mb-4">{t('rules.noRulesDesc')}</p>
         </div>
       ) : (
         <div className="space-y-1.5">
@@ -266,7 +266,7 @@ export default function RulesManager() {
                   </p>
                   {(rule.extra_conditions || []).map((ec, i) => (
                     <span key={i} className="flex items-center gap-1">
-                      <span className="text-[10px] font-bold text-primary/70 uppercase tracking-wide">AND</span>
+                      <span className="text-[10px] font-bold text-primary/70 uppercase tracking-wide">{t('common.and')}</span>
                       <span className="text-xs text-muted-foreground font-mono">
                         {ec.condition_type === 'extension' ? `ext = ${ec.condition_value}` : `name ∋ "${ec.condition_value}"`}
                       </span>
@@ -278,7 +278,7 @@ export default function RulesManager() {
                 </div>
               </div>
               <Badge variant="outline" className="text-[10px] font-mono hidden lg:flex shrink-0 max-w-[180px] truncate">
-                {rule.rename_template || 'no rename'}
+                {rule.rename_template || t('rules.noRename')}
               </Badge>
               {(rule.min_size_bytes || rule.max_age_days) && (
                 <Badge variant="outline" className="text-[10px] font-mono hidden lg:flex shrink-0 border-primary/30 text-primary/70">
@@ -303,12 +303,12 @@ export default function RulesManager() {
       <div className="pt-2">
         <Separator className="mb-5" />
         <div className="flex items-center justify-between mb-3">
-          <p className="text-xs font-semibold tracking-[0.15em] uppercase text-muted-foreground">Quick-start Presets</p>
-          <button onClick={removeDuplicates} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-destructive transition-colors" title="Remove any duplicate rules">
-            <AlertTriangle className="w-3.5 h-3.5" />Remove duplicates
+          <p className="text-xs font-semibold tracking-[0.15em] uppercase text-muted-foreground">{t('rules.presets')}</p>
+          <button onClick={removeDuplicates} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-destructive transition-colors">
+            <AlertTriangle className="w-3.5 h-3.5" />{t('rules.removeDuplicates')}
           </button>
         </div>
-        <p className="text-xs text-muted-foreground mb-4">Apply any preset at any time — existing rules are never duplicated.</p>
+        <p className="text-xs text-muted-foreground mb-4">{t('rules.presetsDesc')}</p>
         <div className="grid grid-cols-3 gap-3">
           {Object.entries(templateMeta).map(([key, { label, icon: Icon, desc }]) => (
             <button
@@ -330,7 +330,7 @@ export default function RulesManager() {
                 <Icon className="w-4 h-4 text-muted-foreground shrink-0" />
               )}
               <div className="text-left">
-                <div className="font-medium">{applyingPreset === key ? 'Applying…' : label}</div>
+                <div className="font-medium">{applyingPreset === key ? t('rules.applying') : label}</div>
                 <div className="text-xs text-muted-foreground">{desc}</div>
               </div>
             </button>
@@ -343,27 +343,25 @@ export default function RulesManager() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="text-base font-semibold">
-              {editingRule ? 'Edit Rule' : 'New Rule'}
+              {editingRule ? t('rules.editRule') : t('rules.newRule')}
             </DialogTitle>
           </DialogHeader>
           <ScrollArea className="max-h-[65vh]">
             <div className="space-y-5 px-1 pb-1">
-              <Field label="Rule Name">
+              <Field label={t('rules.ruleName')}>
                 <Input value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))}
-                  placeholder="PDFs to Documents" className="text-sm" />
+                  placeholder={t('rules.ruleNamePlaceholder')} className="text-sm" />
               </Field>
-              <Field label="Conditions (AND Logic)">
-                <p className="text-xs text-muted-foreground -mt-1 mb-2">All conditions must match for the rule to apply.</p>
-                {/* Primary condition */}
+              <Field label={t('rules.conditions')}>
+                <p className="text-xs text-muted-foreground -mt-1 mb-2">{t('rules.conditionsDesc')}</p>
                 <ConditionRow
                   condType={form.condition_type}
                   condValue={form.condition_value}
                   onTypeChange={v => setForm(p => ({ ...p, condition_type: v }))}
                   onValueChange={v => setForm(p => ({ ...p, condition_value: v }))}
                   canRemove={false}
-                  label="Condition 1 (Primary)"
+                  label={t('rules.condition1')}
                 />
-                {/* Extra conditions */}
                 {form.extra_conditions.map((ec, i) => (
                   <ConditionRow
                     key={i}
@@ -382,7 +380,7 @@ export default function RulesManager() {
                       extra_conditions: p.extra_conditions.filter((_, j) => j !== i)
                     }))}
                     canRemove={true}
-                    label={`Condition ${i + 2} (AND)`}
+                    label={t('rules.conditionN', { n: i + 2 })}
                   />
                 ))}
                 <button
@@ -394,25 +392,23 @@ export default function RulesManager() {
                   className="flex items-center gap-1.5 text-xs text-primary hover:underline mt-1"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  Add Condition
+                  {t('rules.addCondition')}
                 </button>
               </Field>
-              <Field label="Destination Folder">
+              <Field label={t('rules.destination')}>
                 <div className="flex gap-2">
                   <Input value={form.destination_folder}
                     onChange={e => setForm(p => ({ ...p, destination_folder: e.target.value }))}
-                    placeholder="Documents" className="font-mono text-sm flex-1" />
+                    placeholder={t('rules.destinationPlaceholder')} className="font-mono text-sm flex-1" />
                   {isElectron && (
-                    <Button variant="outline" size="sm" onClick={pickDestination} title="Browse">
+                    <Button variant="outline" size="sm" onClick={pickDestination} title={t('common.browse')}>
                       <Folder className="w-4 h-4" />
                     </Button>
                   )}
                 </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Relative paths use Base Output Folder from Settings. Absolute paths work anywhere.
-                </p>
+                <p className="text-xs text-muted-foreground mt-1">{t('rules.destinationHint')}</p>
               </Field>
-              <Field label="Rename Template">
+              <Field label={t('rules.renameTemplate')}>
                 <Input value={form.rename_template}
                   onChange={e => setForm(p => ({ ...p, rename_template: e.target.value }))}
                   placeholder="{date}_{originalname_cleaned}" className="font-mono text-sm" />
@@ -451,35 +447,27 @@ export default function RulesManager() {
                     {(form.min_size_mb || form.max_age_days) && (
                       <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
                     )}
-                    Size &amp; Age Filters (optional)
+                    {t('rules.sizeAgeFilters')}
                   </span>
                   <ChevronDown className={`w-3.5 h-3.5 transition-transform ${sizeAgeOpen ? 'rotate-180' : ''}`} />
                 </button>
                 {sizeAgeOpen && (
                   <div className="px-3 pb-3 pt-1 space-y-3 border-t border-border">
-                    <p className="text-xs text-muted-foreground">Both are optional. Combined with AND logic.</p>
+                    <p className="text-xs text-muted-foreground">{t('rules.sizeAgeDesc')}</p>
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-1.5">
-                        <label className="text-xs font-medium text-muted-foreground">Min Size (MB)</label>
-                        <Input
-                          type="number" min="0" step="0.1"
-                          value={form.min_size_mb}
+                        <label className="text-xs font-medium text-muted-foreground">{t('rules.minSize')}</label>
+                        <Input type="number" min="0" step="0.1" value={form.min_size_mb}
                           onChange={e => setForm(p => ({ ...p, min_size_mb: e.target.value }))}
-                          placeholder="e.g. 1"
-                          className="font-mono text-sm"
-                        />
-                        <p className="text-[10px] text-muted-foreground">Only files ≥ this size.</p>
+                          placeholder="e.g. 1" className="font-mono text-sm" />
+                        <p className="text-[10px] text-muted-foreground">{t('rules.minSizeHint')}</p>
                       </div>
                       <div className="space-y-1.5">
-                        <label className="text-xs font-medium text-muted-foreground">Max Age (days)</label>
-                        <Input
-                          type="number" min="0" step="1"
-                          value={form.max_age_days}
+                        <label className="text-xs font-medium text-muted-foreground">{t('rules.maxAge')}</label>
+                        <Input type="number" min="0" step="1" value={form.max_age_days}
                           onChange={e => setForm(p => ({ ...p, max_age_days: e.target.value }))}
-                          placeholder="e.g. 7"
-                          className="font-mono text-sm"
-                        />
-                        <p className="text-[10px] text-muted-foreground">Only files modified ≤ N days ago.</p>
+                          placeholder="e.g. 7" className="font-mono text-sm" />
+                        <p className="text-[10px] text-muted-foreground">{t('rules.maxAgeHint')}</p>
                       </div>
                     </div>
                   </div>
@@ -487,15 +475,15 @@ export default function RulesManager() {
               </div>
 
               <div className="flex items-center justify-between pt-1">
-                <Label className="text-sm font-medium">Enabled</Label>
+                <Label className="text-sm font-medium">{t('rules.enabled')}</Label>
                 <Switch checked={!!form.enabled} onCheckedChange={v => setForm(p => ({ ...p, enabled: v }))} />
               </div>
             </div>
           </ScrollArea>
           <DialogFooter className="pt-2">
-            <Button variant="outline" size="sm" onClick={() => setShowDialog(false)}>Cancel</Button>
+            <Button variant="outline" size="sm" onClick={() => setShowDialog(false)}>{t('common.cancel')}</Button>
             <Button size="sm" onClick={handleSave} disabled={saving}>
-              {saving ? 'Saving…' : editingRule ? 'Save Changes' : 'Create Rule'}
+              {saving ? t('rules.saving') : editingRule ? t('rules.saveChanges') : t('rules.createRule')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -505,6 +493,7 @@ export default function RulesManager() {
 }
 
 function ConditionRow({ condType, condValue, onTypeChange, onValueChange, onRemove, canRemove, label }) {
+  const { t } = useI18n();
   return (
     <div className="space-y-1.5 border border-border rounded-lg p-3 bg-muted/20 mb-2">
       <div className="flex items-center justify-between">
@@ -519,8 +508,8 @@ function ConditionRow({ condType, condValue, onTypeChange, onValueChange, onRemo
         <Select value={condType} onValueChange={onTypeChange}>
           <SelectTrigger className="text-xs w-40 shrink-0"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="extension">File Extension</SelectItem>
-            <SelectItem value="keyword">Filename Keyword</SelectItem>
+            <SelectItem value="extension">{t('rules.fileExtension')}</SelectItem>
+            <SelectItem value="keyword">{t('rules.filenameKeyword')}</SelectItem>
           </SelectContent>
         </Select>
         <Input

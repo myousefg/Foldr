@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { activityApi, pendingApi } from '@/lib/api';
+import { useI18n } from '@/context/I18nProvider';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -13,6 +14,7 @@ import { isElectron, openFolder } from '@/lib/electron';
 const SELECT_CLS = 'h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring';
 
 export default function ActivityLog() {
+  const { t } = useI18n();
   const [log, setLog]               = useState([]);
   const [loading, setLoading]       = useState(false);
   const [search, setSearch]         = useState('');
@@ -88,8 +90,8 @@ export default function ActivityLog() {
 
   const clearAll = async () => {
     setLoading(true);
-    try { await activityApi.clear(); setLog([]); toast.success('Log cleared'); }
-    catch { toast.error('Failed to clear log'); }
+    try { await activityApi.clear(); setLog([]); toast.success(t('activity.clear')); }
+    catch { toast.error(t('common.error')); }
     setLoading(false);
   };
 
@@ -103,15 +105,15 @@ export default function ActivityLog() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">Activity Log</h1>
-          <p className="text-sm text-muted-foreground mt-1">Every file move, timestamped. Undo in one click.</p>
+          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">{t('activity.title')}</h1>
+          <p className="text-sm text-muted-foreground mt-1">{t('activity.subtitle')}</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={fetchLog}>
             <RefreshCw className="w-3.5 h-3.5" />
           </Button>
           <Button variant="outline" size="sm" onClick={clearAll} disabled={loading || log.length === 0}>
-            <Trash2 className="w-3.5 h-3.5 mr-1.5" />Clear
+            <Trash2 className="w-3.5 h-3.5 mr-1.5" />{t('activity.clear')}
           </Button>
         </div>
       </div>
@@ -126,14 +128,14 @@ export default function ActivityLog() {
           <Bell className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
-              {pendingCount} file{pendingCount !== 1 ? 's are' : ' is'} waiting for review
+              {t('dashboard.filesWaiting', { count: pendingCount })}
             </p>
             <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
-              Undo is disabled until the pending queue is cleared. Go to Dashboard to review.
+              {t('activity.undoPending')}
             </p>
           </div>
           <Badge variant="outline" className="border-amber-400 text-amber-700 dark:text-amber-400 text-[10px] shrink-0">
-            UNDO LOCKED
+            {t('activity.undoLocked')}
           </Badge>
         </div>
       )}
@@ -147,7 +149,7 @@ export default function ActivityLog() {
             <Input
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Search filenames…"
+              placeholder={t('activity.search')}
               className="pl-9 text-sm h-9"
             />
             {search && (
@@ -163,10 +165,10 @@ export default function ActivityLog() {
             onChange={e => setFilterStatus(e.target.value)}
             className={SELECT_CLS}
           >
-            <option value="ALL">All status</option>
-            <option value="ACTIVE">Moved</option>
-            <option value="UNDONE">Undone</option>
-            <option value="SKIPPED">Skipped duplicate</option>
+            <option value="ALL">{t('activity.allStatus')}</option>
+            <option value="ACTIVE">{t('activity.moved')}</option>
+            <option value="UNDONE">{t('activity.undone')}</option>
+            <option value="SKIPPED">{t('activity.skippedDuplicate')}</option>
           </select>
 
           {/* Rule filter */}
@@ -176,7 +178,7 @@ export default function ActivityLog() {
             className={SELECT_CLS}
           >
             {ruleNames.map(name => (
-              <option key={name} value={name}>{name === 'ALL' ? 'All rules' : name}</option>
+              <option key={name} value={name}>{name === 'ALL' ? t('activity.allRules') : name}</option>
             ))}
           </select>
 
@@ -193,22 +195,22 @@ export default function ActivityLog() {
       {log.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-center">
           <ArrowRight className="w-10 h-10 text-muted-foreground/30 mb-4" />
-          <p className="text-sm font-medium text-muted-foreground">No activity yet</p>
-          <p className="text-xs text-muted-foreground mt-1">Files moved by Foldr will appear here.</p>
+          <p className="text-sm font-medium text-muted-foreground">{t('activity.noActivity')}</p>
+          <p className="text-xs text-muted-foreground mt-1">{t('activity.noActivityDesc')}</p>
         </div>
       ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-12 text-center border border-dashed rounded-lg">
           <Search className="w-8 h-8 text-muted-foreground/30 mb-3" />
-          <p className="text-sm text-muted-foreground">No entries match your search.</p>
+          <p className="text-sm text-muted-foreground">{t('activity.noResults', { query: search })}</p>
           <button onClick={() => { setSearch(''); setFilterRule('ALL'); setFilterStatus('ALL'); }} className="text-xs text-primary mt-2 hover:underline">
-            Clear filters
+            {t('activity.clearFilters')}
           </button>
         </div>
       ) : (
         <div className="space-y-2">
           {/* Column headers */}
           <div className="grid grid-cols-[80px_1fr_1fr_180px_64px] gap-3 px-4 pb-1">
-            {['Time','Original','Renamed to','Destination',''].map((h,i) => (
+            {[t('activity.time'), t('activity.original'), t('activity.renamedTo'), t('activity.destination'), ''].map((h,i) => (
               <span key={i} className="text-[10px] uppercase tracking-widest text-muted-foreground">{h}</span>
             ))}
           </div>
@@ -235,7 +237,7 @@ export default function ActivityLog() {
                   ? <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
                   : <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />}
                 <span className="font-mono text-xs font-medium truncate" title={entry.new_name}>
-                  {isSkippedDup ? 'skipped — duplicate' : entry.new_name}
+                  {isSkippedDup ? t('activity.skippedDuplicateText') : entry.new_name}
                 </span>
               </div>
               <div className="min-w-0">
@@ -248,8 +250,8 @@ export default function ActivityLog() {
                 </Badge>
               </div>
               <div className="flex items-center justify-end gap-1.5 shrink-0">
-                {entry.undone && <span className="text-[9px] text-muted-foreground uppercase tracking-wider">undone</span>}
-                {isSkippedDup && <span className="text-[9px] text-amber-500 uppercase tracking-wider">skipped</span>}
+                {entry.undone && <span className="text-[9px] text-muted-foreground uppercase tracking-wider">{t('activity.undoneLabel')}</span>}
+                {isSkippedDup && <span className="text-[9px] text-amber-500 uppercase tracking-wider">{t('activity.skippedLabel')}</span>}
                 {isElectron && entry.new_path && !entry.undone && !isSkippedDup && (
                   <button
                     onClick={() => openFolder(entry.new_path)}

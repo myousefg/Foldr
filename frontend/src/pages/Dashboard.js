@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { statsApi, settingsApi, pendingApi, organizeApi, monitoredFoldersApi } from '@/lib/api';
+import { useI18n } from '@/context/I18nProvider';
 import { Switch } from '@/components/ui/switch';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -14,6 +15,7 @@ import { isElectron, openFolder } from '@/lib/electron';
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const { t } = useI18n();
   const [stats, setStats]             = useState(null);
   const [settings, setSettings]       = useState(null);
   const [pending, setPending]         = useState([]);
@@ -95,8 +97,8 @@ export default function Dashboard() {
     try {
       const updated = await settingsApi.update({ monitoring_enabled: !settings.monitoring_enabled });
       setSettings(updated);
-      toast.success(`Monitoring ${updated.monitoring_enabled ? 'enabled' : 'disabled'}`);
-    } catch { toast.error('Failed to toggle monitoring'); }
+      toast.success(`Monitoring ${updated.monitoring_enabled ? t('dashboard.statusActive') : t('dashboard.statusPaused')}`);
+    } catch { toast.error(t('common.error')); }
   };
 
   const organizeNow = async () => {
@@ -106,17 +108,16 @@ export default function Dashboard() {
       const result = await organizeApi.organizeNow();
       const { actioned, scanned, folders, preview_mode } = result;
       if (actioned === 0) {
-        toast.info('Nothing to organize', {
-          description: `Scanned ${scanned} file${scanned !== 1 ? 's' : ''} — all already organized or no matching rules.`,
+        toast.info(t('dashboard.nothingToOrganize'), {
+          description: t('dashboard.nothingDesc', { count: scanned, s: scanned !== 1 ? 's' : '' }),
         });
       } else {
-        const verb = preview_mode ? 'queued for review' : 'organized';
+        const verb = preview_mode ? t('dashboard.organizeQueued', { count: actioned, s: actioned !== 1 ? 's' : '' })
+                                  : t('dashboard.organizeSuccess', { count: actioned, s: actioned !== 1 ? 's' : '' });
         const folderList = folders.length > 0
           ? `into: ${folders.slice(0, 3).join(', ')}${folders.length > 3 ? ` +${folders.length - 3} more` : ''}`
           : '';
-        toast.success(`${actioned} file${actioned !== 1 ? 's' : ''} ${verb}`, {
-          description: `Scanned ${scanned} files. ${folderList}`,
-        });
+        toast.success(verb, { description: `${t('dashboard.scanDesc', { count: scanned })} ${folderList}` });
       }
       fetchAll();
     } catch (e) {
@@ -153,7 +154,7 @@ export default function Dashboard() {
       setShowPending(false);
       setDupActions({});
       fetchAll();
-    } catch { toast.error('Apply failed'); }
+    } catch { toast.error(t('common.error')); }
     setLoading(false);
   };
 
@@ -176,8 +177,8 @@ export default function Dashboard() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">Dashboard</h1>
-          <p className="text-sm text-muted-foreground mt-1">Set once. Forget forever.</p>
+          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">{t('dashboard.title')}</h1>
+          <p className="text-sm text-muted-foreground mt-1">{t('dashboard.subtitle')}</p>
         </div>
         <div className="flex items-center gap-3">
           <Button
@@ -188,13 +189,13 @@ export default function Dashboard() {
             title={monFolders.filter(f => f.enabled).length === 0 ? 'No active monitored folders' : 'Scan and organize all existing files now'}
           >
             {organizing
-              ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />Organizing…</>
-              : <><Zap className="w-3.5 h-3.5 mr-1.5" />Organize Now</>}
+              ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />{t('dashboard.organizing')}</>
+              : <><Zap className="w-3.5 h-3.5 mr-1.5" />{t('dashboard.organizeNow')}</>}
           </Button>
-          <span className="text-xs tracking-[0.15em] uppercase text-muted-foreground font-medium">Monitoring</span>
+          <span className="text-xs tracking-[0.15em] uppercase text-muted-foreground font-medium">{t('dashboard.monitoring')}</span>
           <Switch checked={!!settings?.monitoring_enabled} onCheckedChange={toggleMonitoring} />
           <Badge variant={settings?.monitoring_enabled ? 'default' : 'secondary'} className="text-[10px] tracking-wider">
-            {settings?.monitoring_enabled ? 'ACTIVE' : 'PAUSED'}
+            {settings?.monitoring_enabled ? t('dashboard.statusActive') : t('dashboard.statusPaused')}
           </Badge>
         </div>
       </div>
@@ -217,32 +218,32 @@ export default function Dashboard() {
 
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="FILES TODAY"     value={stats?.files_today ?? 0}  icon={FileText}   />
-        <StatCard label="ACTIVE RULES"    value={stats?.active_rules ?? 0} icon={ListFilter} />
-        <StatCard label="TOTAL ORGANIZED" value={stats?.total_files ?? 0}  icon={FolderOpen} />
-        <StatCard label="THIS WEEK"       value={stats?.files_week ?? 0}   icon={Clock}      />
+        <StatCard label={t('dashboard.filesToday')}     value={stats?.files_today ?? 0}  icon={FileText}   />
+        <StatCard label={t('dashboard.activeRules')}    value={stats?.active_rules ?? 0} icon={ListFilter} />
+        <StatCard label={t('dashboard.totalOrganized')} value={stats?.total_files ?? 0}  icon={FolderOpen} />
+        <StatCard label={t('dashboard.thisWeek')}       value={stats?.files_week ?? 0}   icon={Clock}      />
       </div>
 
       {/* Monitored folders */}
       <div className="border border-border rounded-lg">
         <div className="p-4 border-b border-border flex items-center justify-between">
           <div>
-            <h2 className="text-sm font-semibold tracking-tight">Monitored Folders</h2>
+            <h2 className="text-sm font-semibold tracking-tight">{t('dashboard.monitoredFolders')}</h2>
             <p className="text-xs text-muted-foreground mt-0.5">
               {monFolders.length > 0
-                ? `${monFolders.filter(f => f.enabled).length} of ${monFolders.length} active`
-                : 'No folders configured yet'}
+                ? `${monFolders.filter(f => f.enabled).length} of ${monFolders.length} ${t('dashboard.active')}`
+                : t('dashboard.noFolders')}
             </p>
           </div>
           <Button variant="outline" size="sm" onClick={() => navigate('/settings')}>
             <Plus className="w-3.5 h-3.5 mr-1.5" />
-            Manage
+            {t('dashboard.manage')}
           </Button>
         </div>
         <div className="p-4 space-y-2">
           {monFolders.length === 0 ? (
             <p className="text-xs text-muted-foreground italic">
-              No folders added. Go to Settings → Monitored Folders to add one.
+              {t('dashboard.noFolders')}
             </p>
           ) : (
             monFolders.map(f => (
@@ -256,9 +257,9 @@ export default function Dashboard() {
                     onClick={async () => {
                       const updated = await monitoredFoldersApi.toggle(f.id, !f.enabled);
                       setMonFolders(prev => prev.map(x => x.id === f.id ? updated : x));
-                      toast.success(updated.enabled ? 'Folder resumed' : 'Folder paused');
+                      toast.success(updated.enabled ? t('settings.folderResumed') : t('settings.folderPaused'));
                     }}
-                    title={f.enabled ? 'Pause this folder' : 'Resume this folder'}
+                    title={f.enabled ? t('settings.pauseFolder') : t('settings.resumeFolder')}
                     className="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded"
                   >
                     {f.enabled
@@ -268,7 +269,7 @@ export default function Dashboard() {
                   {isElectron && (
                     <button
                       onClick={() => openFolder(f.path)}
-                      title="Open in Explorer"
+                      title={t('settings.openExplorer')}
                       className="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded"
                     >
                       <ExternalLink className="w-3.5 h-3.5" />
@@ -290,10 +291,10 @@ export default function Dashboard() {
           <div className="flex items-center gap-2.5">
             <Bell className="w-4 h-4 text-amber-600 dark:text-amber-400" />
             <span className="text-sm font-medium text-amber-800 dark:text-amber-300">
-              {pending.length} file{pending.length !== 1 ? 's' : ''} waiting for review
+              {t('dashboard.filesWaiting', { count: pending.length })}
             </span>
           </div>
-          <Badge variant="outline" className="border-amber-400 text-amber-700 dark:text-amber-400 text-[10px]">REVIEW →</Badge>
+          <Badge variant="outline" className="border-amber-400 text-amber-700 dark:text-amber-400 text-[10px]">{t('dashboard.review')}</Badge>
         </button>
       )}
 
@@ -301,7 +302,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="border border-border rounded-lg">
           <div className="p-4 border-b border-border flex items-center justify-between">
-            <h2 className="text-sm font-semibold tracking-tight">Recent Activity</h2>
+            <h2 className="text-sm font-semibold tracking-tight">{t('dashboard.recentActivity')}</h2>
             <button onClick={fetchAll} className="text-muted-foreground hover:text-foreground">
               <RefreshCw className="w-3.5 h-3.5" />
             </button>
@@ -319,14 +320,14 @@ export default function Dashboard() {
                 ))}
               </div>
             ) : (
-              <p className="text-xs text-muted-foreground">No recent activity</p>
+              <p className="text-xs text-muted-foreground">{t('dashboard.noActivity')}</p>
             )}
           </div>
         </div>
 
         <div className="border border-border rounded-lg">
           <div className="p-4 border-b border-border">
-            <h2 className="text-sm font-semibold tracking-tight">Folders</h2>
+            <h2 className="text-sm font-semibold tracking-tight">{t('dashboard.folders')}</h2>
           </div>
           <div className="p-4">
             {stats?.folder_breakdown?.length > 0 ? (
@@ -352,7 +353,7 @@ export default function Dashboard() {
                 ))}
               </div>
             ) : (
-              <p className="text-xs text-muted-foreground">No folders yet</p>
+              <p className="text-xs text-muted-foreground">{t('dashboard.noFoldersYet')}</p>
             )}
           </div>
         </div>
@@ -362,8 +363,8 @@ export default function Dashboard() {
       <Dialog open={showPending} onOpenChange={(open) => { setShowPending(open); if (open) fetchAll(); }}>
         <DialogContent className="max-w-xl overflow-hidden">
           <DialogHeader>
-            <DialogTitle className="text-base font-semibold">Review Pending Moves</DialogTitle>
-            <p className="text-xs text-muted-foreground">Select which moves to apply. Unselected files stay in place.</p>
+            <DialogTitle className="text-base font-semibold">{t('dashboard.pendingTitle')}</DialogTitle>
+            <p className="text-xs text-muted-foreground">{t('dashboard.pendingSubtitle')}</p>
           </DialogHeader>
           <ScrollArea className="max-h-[400px]">
             <div className="space-y-2 pr-4 w-full min-w-0">
@@ -389,7 +390,7 @@ export default function Dashboard() {
                       {isDup && (
                         <span className="flex items-center gap-1 text-amber-500 shrink-0">
                           <AlertTriangle className="w-3 h-3" />
-                          <span className="text-[10px] font-semibold uppercase tracking-wide">Duplicate</span>
+                          <span className="text-[10px] font-semibold uppercase tracking-wide">{t('dashboard.duplicate')}</span>
                         </span>
                       )}
                     </div>
@@ -413,7 +414,7 @@ export default function Dashboard() {
                   {isDup && (
                     <div className="mt-2 ml-5" onClick={e => e.stopPropagation()}>
                       <p className="text-[10px] text-amber-500 mb-1.5">
-                        ⚠️ Identical file already exists at destination. Choose action:
+                        {t('dashboard.duplicateWarning')}
                       </p>
                       <div className="flex gap-1.5">
                         {['skip','overwrite','rename'].map(action => (
@@ -428,7 +429,7 @@ export default function Dashboard() {
                                 : 'border-border text-muted-foreground hover:border-muted-foreground'
                             }`}
                           >
-                            {action === 'skip' ? 'Skip' : action === 'overwrite' ? 'Overwrite' : 'Rename (_001)'}
+                            {action === 'skip' ? t('dashboard.skip') : action === 'overwrite' ? t('dashboard.overwrite') : t('dashboard.rename001')}
                           </button>
                         ))}
                       </div>
@@ -440,10 +441,10 @@ export default function Dashboard() {
             </div>
           </ScrollArea>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setShowPending(false)}>Cancel</Button>
+            <Button variant="outline" size="sm" onClick={() => setShowPending(false)}>{t('dashboard.cancel')}</Button>
             <Button size="sm" onClick={applySelected} disabled={loading || selected.size === 0}>
               <Check className="w-3.5 h-3.5 mr-1.5" />
-              Apply {selected.size > 0 ? `(${selected.size})` : ''} Moves
+              {t('dashboard.applyMoves', { count: selected.size > 0 ? `(${selected.size}) ` : '' })}
             </Button>
           </DialogFooter>
         </DialogContent>
