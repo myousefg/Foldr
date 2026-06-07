@@ -2,7 +2,7 @@
 Foldr Native Backend
 FastAPI + SQLite + watchdog (real folder monitoring + file moves)
 """
-import os, re, shutil, sqlite3, logging, threading, traceback as _traceback, uuid, time
+import os, re, shutil, sqlite3, logging, threading, traceback as _traceback, uuid, time, hashlib
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
@@ -137,7 +137,8 @@ CREATE TABLE IF NOT EXISTS organized_files (
     id TEXT PRIMARY KEY,
     original_name TEXT, original_path TEXT,
     new_name TEXT, new_path TEXT,
-    folder TEXT, file_type TEXT, organized_at TEXT, rule_id TEXT
+    folder TEXT, file_type TEXT, organized_at TEXT, rule_id TEXT,
+    content_hash TEXT
 );
 CREATE TABLE IF NOT EXISTS activity_log (
     id TEXT PRIMARY KEY,
@@ -145,13 +146,15 @@ CREATE TABLE IF NOT EXISTS activity_log (
     new_name TEXT, new_path TEXT,
     destination_folder TEXT, rule_name TEXT, rule_id TEXT,
     timestamp TEXT, undone INTEGER DEFAULT 0,
-    file_type TEXT, file_id TEXT
+    file_type TEXT, file_id TEXT,
+    duplicate_action TEXT
 );
 CREATE TABLE IF NOT EXISTS pending_files (
     id TEXT PRIMARY KEY,
     original_path TEXT, proposed_path TEXT,
     proposed_name TEXT, destination_folder TEXT,
-    rule_id TEXT, rule_name TEXT, detected_at TEXT
+    rule_id TEXT, rule_name TEXT, detected_at TEXT,
+    content_hash TEXT, duplicate_of TEXT
 );
 CREATE TABLE IF NOT EXISTS monitored_folders (
     id TEXT PRIMARY KEY,
@@ -160,6 +163,19 @@ CREATE TABLE IF NOT EXISTS monitored_folders (
     created_at TEXT NOT NULL
 );
         """)
+        c.commit()
+        # ── Migrations: add new columns to existing tables if missing ──────────
+        existing_cols = lambda tbl: {
+            r[1] for r in c.execute(f"PRAGMA table_info({tbl})").fetchall()
+        }
+        if 'content_hash'     not in existing_cols('organized_files'):
+            c.execute("ALTER TABLE organized_files ADD COLUMN content_hash TEXT")
+        if 'duplicate_action' not in existing_cols('activity_log'):
+            c.execute("ALTER TABLE activity_log ADD COLUMN duplicate_action TEXT")
+        if 'content_hash'     not in existing_cols('pending_files'):
+            c.execute("ALTER TABLE pending_files ADD COLUMN content_hash TEXT")
+        if 'duplicate_of'     not in existing_cols('pending_files'):
+            c.execute("ALTER TABLE pending_files ADD COLUMN duplicate_of TEXT")
         c.commit()
         if not c.execute("SELECT id FROM settings WHERE id='default'").fetchone():
             c.execute("""INSERT INTO settings
@@ -202,6 +218,57 @@ def apply_template(template: str, filename: str, seq: int, category: str, auto_c
     r = r.replace("{category}", category.lower().replace(' ', '-'))
     r = re.sub(r'[-_]{2,}', '_', r).strip('_-')
     return r + ext
+
+def sha256_file(path: str) -> Optional[str]:
+    """Return SHA-256 hex digest of a file, or None on error."""
+    try:
+        h = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+def find_duplicate_in_dest(src_path: str, dest_dir: str, src_hash: Optional[str] = None) -> Optional[str]:
+    """Check if any file in dest_dir has identical content to src_path.
+    Also checks organized_files DB for hash matches (catches race conditions).
+    Returns the path of the duplicate, or None if no duplicate found."""
+    if src_hash is None:
+        src_hash = sha256_file(src_path)
+    if not src_hash:
+        return None
+
+    # 1. Check organized_files DB first — catches files moved moments ago
+    row = db_one(
+        "SELECT new_path FROM organized_files WHERE content_hash=? LIMIT 1",
+        (src_hash,)
+    )
+    if row and row.get("new_path") and os.path.isfile(row["new_path"]):
+        return row["new_path"]
+
+    # 1b. Check pending_files — catches duplicates queued but not yet applied
+    pending_row = db_one(
+        "SELECT original_path FROM pending_files WHERE content_hash=? LIMIT 1",
+        (src_hash,)
+    )
+    if pending_row and pending_row.get("original_path") and os.path.isfile(pending_row["original_path"]):
+        return pending_row["original_path"]
+
+    # 2. Scan destination folder for size+hash match
+    try:
+        src_size = os.path.getsize(src_path)
+        for entry in os.scandir(dest_dir):
+            if not entry.is_file():
+                continue
+            if entry.stat().st_size != src_size:
+                continue
+            candidate_hash = sha256_file(entry.path)
+            if candidate_hash and candidate_hash == src_hash:
+                return entry.path
+    except (OSError, PermissionError):
+        pass
+    return None
 
 def unique_path(p: str) -> str:
     if not os.path.exists(p): return p
@@ -250,7 +317,7 @@ def next_seq(folder: str) -> int:
 _MOVE_MAX_RETRIES = 3
 _MOVE_RETRY_DELAY = 0.1  # seconds
 
-def do_move(src, dst, orig_name, new_name, folder, rule_id, rule_name):
+def do_move(src, dst, orig_name, new_name, folder, rule_id, rule_name, content_hash=None):
     src_path = Path(src).resolve()
     if not src_path.is_file():
         log.warning(f"do_move: source does not exist or is not a file: {src}")
@@ -289,9 +356,9 @@ def do_move(src, dst, orig_name, new_name, folder, rule_id, rule_name):
 
     try:
         db_run("""INSERT INTO organized_files
-            (id,original_name,original_path,new_name,new_path,folder,file_type,organized_at,rule_id)
-            VALUES (?,?,?,?,?,?,?,?,?)""",
-            (fid, orig_name, abs_src, new_name, final_dst, folder, ext, now, rule_id))
+            (id,original_name,original_path,new_name,new_path,folder,file_type,organized_at,rule_id,content_hash)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (fid, orig_name, abs_src, new_name, final_dst, folder, ext, now, rule_id, content_hash))
         db_run("""INSERT INTO activity_log
             (id,original_name,original_path,new_name,new_path,destination_folder,
              rule_name,rule_id,timestamp,undone,file_type,file_id)
@@ -384,17 +451,39 @@ class FoldrHandler(FileSystemEventHandler):
         new_name = apply_template(tmpl, filename, seq, rule["destination_folder"], auto_clean=auto_clean)
         proposed = unique_path(os.path.join(dest_dir, new_name))
 
+        # ── Duplicate detection ────────────────────────────────────────────────
+        Path(dest_dir).mkdir(parents=True, exist_ok=True)
+        src_hash = sha256_file(path)
+        duplicate_of = find_duplicate_in_dest(path, dest_dir, src_hash)
+
         if settings.get("preview_before_apply", 1):
             db_run("""INSERT OR REPLACE INTO pending_files
-                (id,original_path,proposed_path,proposed_name,destination_folder,rule_id,rule_name,detected_at)
-                VALUES (?,?,?,?,?,?,?,?)""",
+                (id,original_path,proposed_path,proposed_name,destination_folder,
+                 rule_id,rule_name,detected_at,content_hash,duplicate_of)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (str(uuid.uuid4()), path, proposed, new_name,
                  rule["destination_folder"], rule["id"], rule["name"],
-                 datetime.now(timezone.utc).isoformat()))
-            log.info(f"Queued: {filename}")
+                 datetime.now(timezone.utc).isoformat(),
+                 src_hash, duplicate_of))
+            log.info(f"Queued: {filename}" + (f" [DUPLICATE of {duplicate_of}]" if duplicate_of else ""))
         else:
-            do_move(path, proposed, filename, new_name,
-                    rule["destination_folder"], rule["id"], rule["name"])
+            if duplicate_of:
+                # Auto-mode: skip duplicate, log to activity_log as skipped
+                ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else 'unknown'
+                now = datetime.now(timezone.utc).isoformat()
+                db_run("""INSERT INTO activity_log
+                    (id,original_name,original_path,new_name,new_path,destination_folder,
+                     rule_name,rule_id,timestamp,undone,file_type,file_id,duplicate_action)
+                    VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?)""",
+                    (str(uuid.uuid4()), filename, path,
+                     os.path.basename(duplicate_of), duplicate_of,
+                     rule["destination_folder"], rule["name"], rule["id"],
+                     now, ext, None, 'skipped_duplicate'))
+                log.info(f"Skipped duplicate: {filename} (identical to {duplicate_of})")
+            else:
+                do_move(path, proposed, filename, new_name,
+                        rule["destination_folder"], rule["id"], rule["name"],
+                        content_hash=src_hash)
 
 _observer: Optional[PollingObserver] = None
 _watched_folders: set = set()
@@ -852,8 +941,13 @@ def delete_rule(rule_id: str):
     db_run("DELETE FROM rules WHERE id=?", (rule_id,)); return {"message": "deleted"}
 
 # ── Pending ───────────────────────────────────────────────────────────────────
+class PendingAction(BaseModel):
+    id: str
+    duplicate_action: Optional[str] = None  # 'skip' | 'overwrite' | 'rename' | None
+
 class ApplyPending(BaseModel):
     ids: List[str]
+    actions: Optional[List[PendingAction]] = None  # per-item duplicate actions
 
 @api.get("/pending")
 def get_pending():
@@ -868,16 +962,22 @@ def get_pending():
 @api.post("/pending/apply")
 def apply_pending(data: ApplyPending):
     applied = 0
-    stale   = 0  # files that were deleted before the user hit Apply
+    stale   = 0
+    skipped = 0
+
+    # Build action map from per-item actions list
+    action_map = {}
+    if data.actions:
+        for a in data.actions:
+            action_map[a.id] = a.duplicate_action
 
     for pid in data.ids:
         row = db_one("SELECT * FROM pending_files WHERE id=?", (pid,))
         if not row:
-            continue  # already processed or skipped
+            continue
 
         if not Path(row["original_path"]).is_file():
             db_run("DELETE FROM pending_files WHERE id=?", (pid,))
-            log.info(f"apply_pending: stale record removed (file gone): {row['original_path']}")
             stale += 1
             continue
 
@@ -886,20 +986,49 @@ def apply_pending(data: ApplyPending):
             db_run("DELETE FROM pending_files WHERE id=?", (pid,))
             continue
 
+        dup_action = action_map.get(pid)
+        duplicate_of = row.get("duplicate_of")
+
+        # If this file is a duplicate and user chose skip (or no action chosen)
+        if duplicate_of and dup_action == 'skip':
+            db_run("DELETE FROM pending_files WHERE id=?", (pid,))
+            skipped += 1
+            continue
+
+        proposed = row["proposed_path"]
+
+        if duplicate_of and dup_action == 'overwrite':
+            # Remove the existing duplicate then move to its exact path
+            try:
+                os.remove(duplicate_of)
+                log.info(f"Overwrite: removed existing {duplicate_of}")
+            except OSError as e:
+                log.warning(f"Overwrite: could not remove {duplicate_of}: {e}")
+            proposed = duplicate_of  # move to exact same path
+
+        elif duplicate_of and dup_action == 'rename':
+            # Use the already-unique proposed_path (has _001 suffix from unique_path)
+            proposed = row["proposed_path"]
+
+        elif duplicate_of and not dup_action:
+            # No action provided for a duplicate — default to rename
+            proposed = row["proposed_path"]
+
         result = do_move(
             row["original_path"],
-            row["proposed_path"],
+            proposed,
             os.path.basename(row["original_path"]),
             row["proposed_name"],
             row["destination_folder"],
             row["rule_id"],
             row["rule_name"],
+            content_hash=row.get("content_hash"),
         )
         db_run("DELETE FROM pending_files WHERE id=?", (pid,))
         if result:
             applied += 1
 
-    return {"applied": applied, "stale": stale}
+    return {"applied": applied, "stale": stale, "skipped": skipped}
 
 @api.delete("/pending/{pid}")
 def skip_pending(pid: str):

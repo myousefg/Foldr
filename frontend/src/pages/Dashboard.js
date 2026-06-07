@@ -8,7 +8,7 @@ import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { toast } from 'sonner';
-import { FileText, ListFilter, FolderOpen, Clock, ArrowRight, Check, X, Bell, RefreshCw, ExternalLink, Folder, Plus, Eye, EyeOff, Zap, Loader2 } from 'lucide-react';
+import { FileText, ListFilter, FolderOpen, Clock, ArrowRight, Check, X, Bell, RefreshCw, ExternalLink, Folder, Plus, Eye, EyeOff, Zap, Loader2, AlertTriangle } from 'lucide-react';
 
 const isElectron = !!window.electronAPI;
 
@@ -19,6 +19,7 @@ export default function Dashboard() {
   const [pending, setPending]         = useState([]);
   const [monFolders, setMonFolders]   = useState([]);
   const [organizing, setOrganizing]   = useState(false);
+  const [dupActions, setDupActions]   = useState({});  // { [pendingId]: 'skip'|'overwrite'|'rename' }
   const [selected, setSelected]       = useState(new Set());
   const [showPending, setShowPending] = useState(false);
   const [loading, setLoading]     = useState(false);
@@ -134,7 +135,11 @@ export default function Dashboard() {
     if (selected.size === 0) return;
     setLoading(true);
     try {
-      const result = await pendingApi.apply([...selected]);
+      const ids = [...selected];
+      const actions = ids
+        .filter(id => dupActions[id])
+        .map(id => ({ id, duplicate_action: dupActions[id] }));
+      const result = await pendingApi.apply(ids, actions.length ? actions : undefined);
 
       // result now returns { applied, stale }
       if (result.applied > 0 && result.stale > 0) {
@@ -150,6 +155,7 @@ export default function Dashboard() {
       }
 
       setShowPending(false);
+      setDupActions({});
       fetchAll();
     } catch { toast.error('Apply failed'); }
     setLoading(false);
@@ -365,12 +371,15 @@ export default function Dashboard() {
           </DialogHeader>
           <ScrollArea className="max-h-[400px]">
             <div className="space-y-2 pr-4 w-full min-w-0">
-              {pending.map(p => (
+              {pending.map(p => {
+                const isDup = !!p.duplicate_of;
+                const dupAction = dupActions[p.id] || (isDup ? 'rename' : null);
+                return (
                 <div
                   key={p.id}
                   className={`border rounded-lg p-3 text-xs transition-colors cursor-pointer overflow-hidden ${
                     selected.has(p.id) ? 'border-primary/40 bg-primary/5' : 'border-border opacity-50'
-                  }`}
+                  } ${isDup ? 'border-amber-400/50' : ''}`}
                   onClick={() => toggleSelect(p.id)}
                 >
                   <div className="grid gap-2 mb-1.5" style={{gridTemplateColumns: '1fr auto'}}>
@@ -381,6 +390,12 @@ export default function Dashboard() {
                         {selected.has(p.id) && <Check className="w-2.5 h-2.5 text-primary-foreground" />}
                       </div>
                       <span className="font-medium text-muted-foreground truncate">{p.rule_name}</span>
+                      {isDup && (
+                        <span className="flex items-center gap-1 text-amber-500 shrink-0">
+                          <AlertTriangle className="w-3 h-3" />
+                          <span className="text-[10px] font-semibold uppercase tracking-wide">Duplicate</span>
+                        </span>
+                      )}
                     </div>
                     <button
                       onClick={e => { e.stopPropagation(); skipOne(p.id); }}
@@ -390,6 +405,7 @@ export default function Dashboard() {
                       <X className="w-3.5 h-3.5" />
                     </button>
                   </div>
+
                   <div className="font-mono space-y-1 ml-5 w-full pr-12">
                     <div className="text-muted-foreground break-all">{p.original_path}</div>
                     <div className="flex items-start gap-1.5 w-full">
@@ -397,8 +413,34 @@ export default function Dashboard() {
                       <span className="text-foreground break-all">{p.proposed_path}</span>
                     </div>
                   </div>
+
+                  {isDup && (
+                    <div className="mt-2 ml-5" onClick={e => e.stopPropagation()}>
+                      <p className="text-[10px] text-amber-500 mb-1.5">
+                        ⚠️ Identical file already exists at destination. Choose action:
+                      </p>
+                      <div className="flex gap-1.5">
+                        {['skip','overwrite','rename'].map(action => (
+                          <button
+                            key={action}
+                            onClick={() => setDupActions(prev => ({ ...prev, [p.id]: action }))}
+                            className={`px-2 py-1 rounded text-[10px] font-medium border transition-colors capitalize ${
+                              dupAction === action
+                                ? action === 'skip'      ? 'bg-red-500/20 border-red-500 text-red-400'
+                                : action === 'overwrite' ? 'bg-amber-500/20 border-amber-500 text-amber-400'
+                                :                          'bg-primary/20 border-primary text-primary'
+                                : 'border-border text-muted-foreground hover:border-muted-foreground'
+                            }`}
+                          >
+                            {action === 'skip' ? 'Skip' : action === 'overwrite' ? 'Overwrite' : 'Rename (_001)'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </ScrollArea>
           <DialogFooter>

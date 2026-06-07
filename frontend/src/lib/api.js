@@ -26,7 +26,7 @@ export const organizeApi = {
 
 export const pendingApi = {
   getAll: (signal) => api.get('/pending', { signal }).then(r => r.data),
-  apply:  (ids) => api.post('/pending/apply', { ids }).then(r => r.data),
+  apply:  (ids, actions) => api.post('/pending/apply', { ids, actions }).then(r => r.data),
   skip:   (id)  => api.delete(`/pending/${id}`).then(r => r.data),
   clear:  ()    => api.delete('/pending').then(r => r.data),
 };
